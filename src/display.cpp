@@ -1923,35 +1923,109 @@ static const int  kHitColC      = 10;  // strike point — where a heart sits wh
 static const int  kHitColR      = 12;  // right rail
 static const char kBeatChar     = '\x01'; // CGRAM slot 1 = heart (defined at play-start)
 
-// Heart shape in CGRAM slot 1 — written when entering RG_PLAYING.
-static void lcdRetroDefineBeatChar(void) {
-  uint8_t d[8] = { 0x1B, 0x1F, 0x0E, 0x0E, 0x04, 0x04, 0x00, 0x00 };
-  lcd.createChar(1, d);
+// 5×8 CGRAM glyphs (bit4 = left pixel, bit0 = right). Shared by play lane + meltdown.
+// Heart: filled ▼ with a single pixel cut from the top centre — all 8 rows used for max ink.
+static const uint8_t kLcdHeartGlyph[8] = {
+    0x1B, // ██░██  flat top, centre pixel out
+    0x1F, // █████
+    0x1F, // █████
+    0x1F, // █████
+    0x1F, // █████
+    0x1F, // █████
+    0x0E, // ░███░
+    0x04, // ░░█░░  tip fills bottom row
+};
+// Hit burst: solid 5×7 block flash — unmistakable, full contrast vs the ▼ heart.
+static const uint8_t kLcdBurstGlyph[8] = {
+    0x1F, // █████
+    0x1F, // █████
+    0x1F, // █████
+    0x1F, // █████
+    0x1F, // █████
+    0x1F, // █████
+    0x1F, // █████
+    0x00,
+};
+
+static void lcdWriteCgramGlyph(uint8_t slot, const uint8_t *src) {
+  uint8_t buf[8];
+  memcpy(buf, src, 8);
+  lcd.createChar(slot, buf);
 }
 
-static void lcdRetroFillBeatStars(char *row, uint32_t scrollPeriodMs, uint32_t songRelMs,
-                                  const uint32_t *beats, int nBeats) {
-  const int W = 20;
-  const int kCpp = 9;  // cols per scroll-period — see header comment
+// Heart shape in CGRAM slot 1 — written when entering RG_PLAYING.
+// Explode/burst shape in CGRAM slot 2 — shown when a heart is hit inside the bracket.
+// Each beat is placed at: col = kHitColC + (beatMs - songRelMs) * kCpp / scrollPeriodMs
+//   beat in the future → col > 10 (right side) → scrolls left as songRelMs advances
+//   beat at strike time → col == 10 (reticle centre)
+static void lcdRetroDefineBeatChar(void) {
+  lcdWriteCgramGlyph(1, kLcdHeartGlyph);
+  lcdWriteCgramGlyph(2, kLcdBurstGlyph);
+}
+static const char kExplodeChar  = '\x02'; // CGRAM slot 2 = burst
+// Hit lifecycle on the lane: burst at frozen col, then blink-fade, then gone.
+static const uint32_t kHitBurstMs = 250u;
+static const uint32_t kHitFadeMs  = 500u;  // blink-fade after burst
+static const uint32_t kHitGoneMs  = kHitBurstMs + kHitFadeMs;
+// HIT label on the time row uses the burst window only.
+static const uint32_t kHitFlashMs = kHitBurstMs;
 
-  for (int i = 0; i < W; i++)
-    row[i] = ' ';
+static void lcdRetroFillBeatStars(char *row, uint32_t scrollPeriodMs, uint32_t songRelMs,
+                                  const uint32_t *beats, int nBeats,
+                                  uint32_t wallMs,
+                                  const LcdConsumedEntry *consumed, int nConsumed) {
+  const int W    = 20;
+  const int kCpp = 9;
+
+  for (int i = 0; i < W; i++) row[i] = ' ';
   row[W] = '\0';
 
   if (!beats || nBeats <= 0) return;
   uint32_t period = (scrollPeriodMs > 0u) ? scrollPeriodMs : 1u;
+  uint32_t matchFuzz = period / 4u;
+  if (matchFuzz < 40u)
+    matchFuzz = 40u;
 
-  // Visible time window: ~kHitColC right of now (~1.1 periods future) and ~9 cols
-  // left of now (~1 period past).  We iterate every onset; the col-bounds check
-  // skips anything off-screen so the loop is cheap even for long song arrays.
   for (int i = 0; i < nBeats; i++) {
-    int64_t dt = (int64_t)beats[i] - (int64_t)songRelMs;
+    // Fuzzy match — grid snap can shift beatMs slightly between frames.
+    uint32_t hitWall = 0;
+    int8_t   hitCol  = -1;
+    for (int j = 0; j < nConsumed; j++) {
+      uint32_t d = (consumed[j].beatMs > beats[i]) ? (consumed[j].beatMs - beats[i]) : (beats[i] - consumed[j].beatMs);
+      if (d <= matchFuzz) {
+        hitWall = consumed[j].hitWallMs;
+        hitCol  = consumed[j].hitCol;
+        break;
+      }
+    }
+
+    int col;
+    if (hitWall != 0) {
+      uint32_t age = wallMs - hitWall;
+      // Freeze at the column where the heart was when hit (no leftward drift).
+      col = (int)hitCol;
+      if (col < 0 || col >= W)
+        continue;
+      if (col == kHitColL || col == kHitColR)
+        continue;
+      if (age < kHitBurstMs) {
+        row[col] = kExplodeChar;
+      } else if (age < kHitGoneMs) {
+        // Hold solid burst through fade window — no blink (was reading dim/odd on LCD).
+        row[col] = kExplodeChar;
+      }
+      // After fade: stay blank — never redraw the scrolling heart.
+      continue;
+    }
+
+    int64_t dt   = (int64_t)beats[i] - (int64_t)songRelMs;
     int64_t dCol = (dt * (int64_t)kCpp) / (int64_t)period;
-    int col = kHitColC + (int)dCol;
+    col          = kHitColC + (int)dCol;
 
     if (col < 0 || col >= W) continue;
-    if (col == kHitColL || col == kHitColR) continue;  // rail cells are reserved
-    if (row[col] != kBeatChar) row[col] = kBeatChar;
+    if (col == kHitColL || col == kHitColR) continue;
+
+    if (row[col] == ' ') row[col] = kBeatChar;
   }
 }
 
@@ -1975,12 +2049,9 @@ static void lcdRetroPad20(char *out, const char *src) {
 }
 
 // snprintf time line is often <20 chars; pad so lcd.print clears cols 14–19 (e.g. get-ready "111111" leftovers).
-// HIT label flashes for 250ms after each player tap; score % stays in its fixed slot so
-// the percent never moves around as HIT comes and goes.
-static const uint32_t kHitFlashMs = 250u;
-
+// HIT / MISS label flashes for kHitFlashMs; score % stays in its fixed slot.
 static void lcdRetroFormatTimeLine(char *row21, uint32_t elapsedMs, uint32_t durationMs, bool paused, int livePct,
-                                    uint32_t wallMs, uint32_t lastTapWallMs) {
+                                    uint32_t wallMs, uint32_t lastHitWallMs, uint32_t lastMissWallMs) {
   uint32_t e = elapsedMs / 1000;
   uint32_t d = durationMs / 1000;
   if (d == 0)
@@ -1989,10 +2060,11 @@ static void lcdRetroFormatTimeLine(char *row21, uint32_t elapsedMs, uint32_t dur
     snprintf(row21, 21, "%u:%02u / %u:%02u ||", (unsigned)(e / 60), (unsigned)(e % 60), (unsigned)(d / 60),
              (unsigned)(d % 60));
   } else if (livePct >= 0) {
-    bool flashHit = (lastTapWallMs != 0) && ((wallMs - lastTapWallMs) < kHitFlashMs);
-    const char *hitLabel = flashHit ? "HIT" : "   ";
+    bool flashHit  = (lastHitWallMs != 0) && ((wallMs - lastHitWallMs) < kHitFlashMs);
+    bool flashMiss = !flashHit && (lastMissWallMs != 0) && ((wallMs - lastMissWallMs) < kHitFlashMs);
+    const char *label = flashHit ? "HIT" : (flashMiss ? "MISS" : "   ");
     snprintf(row21, 21, "%u:%02u/%u:%02u %s %3d%%", (unsigned)(e / 60), (unsigned)(e % 60), (unsigned)(d / 60),
-             (unsigned)(d % 60), hitLabel, livePct);
+             (unsigned)(d % 60), label, livePct);
   } else {
     snprintf(row21, 21, "%u:%02u / %u:%02u   ", (unsigned)(e / 60), (unsigned)(e % 60), (unsigned)(d / 60),
              (unsigned)(d % 60));
@@ -2011,7 +2083,7 @@ void lcdRetroResumeCountdown(uint32_t now, uint32_t startMs, uint32_t countEachM
   char row0[21];
   lcdRetroPad20(row0, title);
   char row1[21];
-  lcdRetroFormatTimeLine(row1, elapsedMs, durationMs, false, -1, 0u, 0u);
+  lcdRetroFormatTimeLine(row1, elapsedMs, durationMs, false, -1, 0u, 0u, 0u);
 
   char countCh = '3';
   if (t >= countEachMs * 2u)
@@ -2041,9 +2113,226 @@ static char s_playLastRow2[21];
 static char s_playLastRow3[21];
 static bool s_playRowsInit = false;
 
+// ---- 5s hold meltdown easter-egg -------------------------------------------
+
+static char     s_meltdownSnap[4][21];
+static bool     s_meltdownSnapReady = false;
+static uint32_t s_meltdownRng       = 1;
+static int      s_rainHeadY[20];
+static int      s_rainSpeed[20];
+static uint32_t s_meltdownLastRainMs = 0;
+static char     s_meltdownLastDraw[4][21];
+static bool     s_meltdownCgramReady  = false;
+
+static const char kBeatCharLocal    = '\x01';
+static const char kExplodeCharLocal = '\x02';
+
+static uint32_t meltdownRand(void) {
+  s_meltdownRng = s_meltdownRng * 1664525u + 1013904223u;
+  return s_meltdownRng;
+}
+
+static char meltdownMatrixChar(void) {
+  static const char kPool[] = "0123456789#$%&@|:";
+  return kPool[meltdownRand() % (sizeof(kPool) - 1u)];
+}
+
+static void meltdownDefineRainChar(void) {
+  uint8_t rain[8] = { 0x04, 0x04, 0x0E, 0x0E, 0x1F, 0x00, 0x00, 0x00 };
+  lcdWriteCgramGlyph(1, kLcdHeartGlyph);
+  lcdWriteCgramGlyph(2, kLcdBurstGlyph);
+  lcdWriteCgramGlyph(3, rain);
+}
+
+static void meltdownPrintRows(char row[4][21]) {
+  for (int r = 0; r < 4; r++) {
+    if (memcmp(row[r], s_meltdownLastDraw[r], 20) == 0)
+      continue;
+    lcd.setCursor(0, r);
+    for (int c = 0; c < 20; c++)
+      lcd.write((uint8_t)row[r][c]);
+    memcpy(s_meltdownLastDraw[r], row[r], 21);
+  }
+}
+
+void lcdRetroMeltdownBegin(void) {
+  meltdownDefineRainChar();
+  if (s_playRowsInit) {
+    memcpy(s_meltdownSnap[0], s_playLastRow0, 21);
+    memcpy(s_meltdownSnap[1], s_playLastRow1, 21);
+    memcpy(s_meltdownSnap[2], s_playLastRow2, 21);
+    memcpy(s_meltdownSnap[3], s_playLastRow3, 21);
+    s_meltdownSnapReady = true;
+  } else {
+    for (int r = 0; r < 4; r++) {
+      memset(s_meltdownSnap[r], ' ', 20);
+      s_meltdownSnap[r][20] = '\0';
+    }
+    s_meltdownSnapReady = true;
+  }
+  s_meltdownRng = millis() | 1u;
+  for (int c = 0; c < 20; c++) {
+    s_rainHeadY[c] = -(int)(meltdownRand() % 5);
+    s_rainSpeed[c] = 1 + (int)(meltdownRand() % 2);
+  }
+  s_meltdownLastRainMs = 0;
+  s_meltdownCgramReady = true;
+  for (int r = 0; r < 4; r++) {
+    memset(s_meltdownLastDraw[r], 0xff, 20);
+    s_meltdownLastDraw[r][20] = '\0';
+  }
+  memset(s_playLastRow0, ' ', 20);
+  memset(s_playLastRow1, ' ', 20);
+  memset(s_playLastRow2, ' ', 20);
+  memset(s_playLastRow3, ' ', 20);
+  s_playLastRow0[20] = s_playLastRow1[20] = s_playLastRow2[20] = s_playLastRow3[20] = '\0';
+}
+
+bool lcdRetroHoldMeltdown(uint32_t now, uint32_t startMs) {
+  const uint32_t kGlitchMs = 2200u;
+  const uint32_t kChaosMs  = 4200u;
+  const uint32_t kDisintMs = 5800u;
+  const uint32_t kRainMs   = 10500u;
+  const char     kRainChar = '\x03';
+
+  uint32_t t = now - startMs;
+  char row[4][21];
+
+  if (t < kGlitchMs) {
+    float chaos = (float)t / (float)kGlitchMs;
+    for (int r = 0; r < 4; r++) {
+      for (int c = 0; c < 20; c++) {
+        char base = s_meltdownSnapReady ? s_meltdownSnap[r][c] : ' ';
+        uint32_t roll = meltdownRand() % 1000u;
+        if (roll < (uint32_t)(chaos * 850.f))
+          row[r][c] = meltdownMatrixChar();
+        else if (roll < (uint32_t)(chaos * 950.f)) {
+          int nc = (c + 1 + (int)(meltdownRand() % 3)) % 20;
+          row[r][c] = s_meltdownSnapReady ? s_meltdownSnap[r][nc] : base;
+        } else
+          row[r][c] = base;
+      }
+      row[r][20] = '\0';
+    }
+  } else if (t < kChaosMs) {
+    float fill = (float)(t - kGlitchMs) / (float)(kChaosMs - kGlitchMs);
+    for (int r = 0; r < 4; r++) {
+      for (int c = 0; c < 20; c++) {
+        uint32_t roll = meltdownRand() % 1000u;
+        if (roll < (uint32_t)(200.f + fill * 750.f)) {
+          uint32_t pick = meltdownRand() % 100u;
+          if (pick < 35u)
+            row[r][c] = kBeatCharLocal;
+          else if (pick < 55u)
+            row[r][c] = kExplodeCharLocal;
+          else
+            row[r][c] = meltdownMatrixChar();
+        } else if (s_meltdownSnapReady)
+          row[r][c] = s_meltdownSnap[r][c];
+        else
+          row[r][c] = ' ';
+      }
+      row[r][20] = '\0';
+    }
+  } else if (t < kDisintMs) {
+    float die = (float)(t - kChaosMs) / (float)(kDisintMs - kChaosMs);
+    for (int r = 0; r < 4; r++) {
+      for (int c = 0; c < 20; c++) {
+        uint32_t roll = meltdownRand() % 1000u;
+        if (roll < (uint32_t)(die * 920.f))
+          row[r][c] = ' ';
+        else if (roll < (uint32_t)(die * 980.f))
+          row[r][c] = (meltdownRand() & 1u) ? kExplodeCharLocal : meltdownMatrixChar();
+        else if (roll < 500u)
+          row[r][c] = kBeatCharLocal;
+        else
+          row[r][c] = meltdownMatrixChar();
+      }
+      row[r][20] = '\0';
+    }
+  } else if (t < kRainMs) {
+    if (s_meltdownLastRainMs == 0 || (now - s_meltdownLastRainMs) >= 55u) {
+      s_meltdownLastRainMs = now;
+      for (int c = 0; c < 20; c++) {
+        s_rainHeadY[c] += s_rainSpeed[c];
+        if (s_rainHeadY[c] > 7)
+          s_rainHeadY[c] = -(int)(meltdownRand() % 4);
+      }
+    }
+    float wash = (float)(t - kDisintMs) / (float)(kRainMs - kDisintMs);
+    for (int r = 0; r < 4; r++) {
+      for (int c = 0; c < 20; c++)
+        row[r][c] = ' ';
+      row[r][20] = '\0';
+    }
+    for (int c = 0; c < 20; c++) {
+      int head = s_rainHeadY[c];
+      for (int trail = 0; trail < 3; trail++) {
+        int y = head - trail;
+        if (y < 0 || y >= 4)
+          continue;
+        if (trail == 0)
+          row[y][c] = kRainChar;
+        else if (wash < 0.55f)
+          row[y][c] = meltdownMatrixChar();
+        else
+          row[y][c] = ' ';
+      }
+    }
+    if (wash > 0.35f) {
+      for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 20; c++) {
+          if (meltdownRand() % 1000u < (uint32_t)(wash * 700.f))
+            row[r][c] = ' ';
+          else if (row[r][c] == ' ' && meltdownRand() % 100u < 8u)
+            row[r][c] = meltdownMatrixChar();
+        }
+      }
+    }
+  } else {
+    for (int r = 0; r < 4; r++) {
+      memset(row[r], ' ', 20);
+      row[r][20] = '\0';
+    }
+  }
+
+  meltdownPrintRows(row);
+  return true;
+}
+
+// Snap-back delay after releasing during meltdown: scales with how far the glitch progressed (max 1 s).
+uint32_t lcdRetroMeltdownRecoverDurationMs(uint32_t meltdownHeldMs) {
+  const uint32_t kMaxRecover = 1000u;
+  const uint32_t kMinRecover = 80u;
+  const uint32_t kFullGlitchMs = 5800u; // disintegrate phase ≈ peak chaos
+  if (meltdownHeldMs >= kFullGlitchMs)
+    return kMaxRecover;
+  return kMinRecover + (meltdownHeldMs * (kMaxRecover - kMinRecover)) / kFullGlitchMs;
+}
+
+static char lcdRecoverGlitchChar(uint32_t seed) {
+  static const char kPool[] = "0123456789#$%&@|:";
+  return kPool[seed % (sizeof(kPool) - 1u)];
+}
+
+static void lcdRetroCorruptRowGlitch(char *row, float glitch, uint32_t wallMs, int rowIdx) {
+  if (glitch <= 0.005f)
+    return;
+  for (int c = 0; c < 20; c++) {
+    uint32_t seed = wallMs * 131u + (uint32_t)rowIdx * 17u + (uint32_t)c * 7u;
+    uint32_t roll = seed % 1000u;
+    if (roll < (uint32_t)(glitch * 900.f))
+      row[c] = lcdRecoverGlitchChar(seed);
+    else if (roll < (uint32_t)(glitch * 980.f))
+      row[c] = ' ';
+  }
+}
+
 void lcdRetroPlayingInvalidate(void) {
   lcdRetroDefineBeatChar();
   s_playRowsInit = false;
+  s_meltdownSnapReady = false;
+  s_meltdownCgramReady = false;
   memset(s_playLastRow0, ' ', 20);
   memset(s_playLastRow1, ' ', 20);
   memset(s_playLastRow2, ' ', 20);
@@ -2053,9 +2342,15 @@ void lcdRetroPlayingInvalidate(void) {
 
 void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs, uint32_t beatPeriodMs, uint32_t wallMs,
                      uint32_t songRelMs, const uint32_t *beats, int nBeats,
-                     uint32_t lastTapWallMs, bool paused, int liveScorePct) {
+                     uint32_t lastHitWallMs, uint32_t lastMissWallMs,
+                     const LcdConsumedEntry *consumed, int nConsumed,
+                     bool paused, int liveScorePct, float recoverGlitch) {
   if (!s_playRowsInit || elapsedMs < s_playLastElapsedMs) {
     lcdRetroDefineBeatChar();
+    // Full clear so the LCD matches the all-spaces cache. Without this, direct
+    // writes from get-ready (countdown 1/2/3) leave stale chars in positions
+    // that the delta-writer skips because fresh == cached == ' '.
+    lcd.clear();
     memset(s_playLastRow0, ' ', 20);
     memset(s_playLastRow1, ' ', 20);
     memset(s_playLastRow2, ' ', 20);
@@ -2076,7 +2371,8 @@ void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs,
   }
 
   char row1[21];
-  lcdRetroFormatTimeLine(row1, elapsedMs, durationMs, paused, paused ? -1 : liveScorePct, wallMs, lastTapWallMs);
+  lcdRetroFormatTimeLine(row1, elapsedMs, durationMs, paused, paused ? -1 : liveScorePct, wallMs, lastHitWallMs,
+                         lastMissWallMs);
 
   char row2[21];
   char row3[21];
@@ -2084,10 +2380,17 @@ void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs,
     lcdRetroPad20(row2, "== PAUSED 16+46 3s =");
     lcdRetroPad20(row3, "  HOLD 3s TO RESUME  ");
   } else {
-    lcdRetroFillBeatStars(row2, beatPeriodMs, songRelMs, beats, nBeats);
+    lcdRetroFillBeatStars(row2, beatPeriodMs, songRelMs, beats, nBeats, wallMs, consumed, nConsumed);
     lcdRetroOverlayHitRails(row2);
-    lcdRetroFillBeatStars(row3, beatPeriodMs, songRelMs, beats, nBeats);
+    lcdRetroFillBeatStars(row3, beatPeriodMs, songRelMs, beats, nBeats, wallMs, consumed, nConsumed);
     lcdRetroOverlayHitWindow(row3);
+  }
+
+  if (recoverGlitch > 0.005f) {
+    lcdRetroCorruptRowGlitch(row0, recoverGlitch, wallMs, 0);
+    lcdRetroCorruptRowGlitch(row1, recoverGlitch, wallMs, 1);
+    lcdRetroCorruptRowGlitch(row2, recoverGlitch, wallMs, 2);
+    lcdRetroCorruptRowGlitch(row3, recoverGlitch, wallMs, 3);
   }
 
   // Per-cell delta update — only writes the columns that actually changed.  Avoids
@@ -2108,10 +2411,19 @@ void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs,
     }
     last[20] = '\0';
   };
+  // Beat rows: full-line write with lcd.write so CGRAM slots 1/2 render reliably.
+  auto printBeatRow = [](int rowIdx, const char *fresh, char *last) {
+    if (memcmp(fresh, last, 20) == 0)
+      return;
+    lcd.setCursor(0, rowIdx);
+    for (int i = 0; i < 20; i++)
+      lcd.write((uint8_t)fresh[i]);
+    memcpy(last, fresh, 21);
+  };
   deltaWriteRow(0, row0, s_playLastRow0);
   deltaWriteRow(1, row1, s_playLastRow1);
-  deltaWriteRow(2, row2, s_playLastRow2);
-  deltaWriteRow(3, row3, s_playLastRow3);
+  printBeatRow(2, row2, s_playLastRow2);
+  printBeatRow(3, row3, s_playLastRow3);
 }
 
 void lcdRetroStillTherePrompt(uint32_t now, uint32_t promptStartMs) {

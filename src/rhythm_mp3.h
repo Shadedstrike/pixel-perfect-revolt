@@ -42,6 +42,8 @@ void rhythmStreamSetFadeMul(float linear01);
 
 // Elapsed play position in ms (for UI). Stops updating when not active.
 uint32_t rhythmStreamElapsedMs();
+// Sample-accurate song ms — matches bass-onset timestamps from the beat tracker.
+uint32_t rhythmStreamAudioPositionMs(void);
 
 // BPM from last opened MP3 (ID3 TBPM / filename) or synth start; 0 if unknown. Used to refresh chart vs scan default.
 uint16_t rhythmStreamSourceBpm(void);

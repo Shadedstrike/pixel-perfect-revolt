@@ -45,9 +45,17 @@ void lcdRetroFlashScreen(uint32_t now, uint32_t flashStartMs);
 uint32_t lcdRetroFlashDurationMs(void);
 void lcdRetroMenu(int selectedIdx, const RhythmSongRow *rows, int numRows, uint32_t wallMs);
 void lcdRetroPlayingInvalidate(void);
+void lcdRetroMeltdownBegin(void);
+// 5s hold easter-egg: glitch → matrix hearts → disintegrate → rain wash.
+bool lcdRetroHoldMeltdown(uint32_t now, uint32_t startMs);
+// Release during meltdown: 80 ms – 1000 ms snap-back scaled by meltdown depth.
+uint32_t lcdRetroMeltdownRecoverDurationMs(uint32_t meltdownHeldMs);
+struct LcdConsumedEntry { uint32_t beatMs; uint32_t hitWallMs; int8_t hitCol; };
 void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs, uint32_t beatPeriodMs, uint32_t wallMs,
                      uint32_t songRelMs, const uint32_t *beats, int nBeats,
-                     uint32_t lastTapWallMs, bool paused, int liveScorePct);
+                     uint32_t lastHitWallMs, uint32_t lastMissWallMs,
+                     const LcdConsumedEntry *consumed, int nConsumed,
+                     bool paused, int liveScorePct, float recoverGlitch = 0.f);
 void lcdRetroResumeCountdown(uint32_t now, uint32_t startMs, uint32_t countEachMs, const char *title, uint32_t elapsedMs,
                              uint32_t durationMs);
 void lcdRetroStillTherePrompt(uint32_t now, uint32_t promptStartMs);

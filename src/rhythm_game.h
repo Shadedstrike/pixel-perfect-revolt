@@ -20,6 +20,7 @@ bool rhythmGameDrawLcd(uint32_t now);
 
 // MP3 decode pump — call instead of audioRender for the whole rhythm game (menu/play/results).
 void rhythmGameAudioPump();
+void rhythmGameAudioPumpN(int n);
 // True during all rhythm phases: blocks main synthesizer mode (audioRender) — rhythm uses MP3 only.
 bool rhythmGameOwnsAudioOutput();
 // Live beat/score hue on 16/46 — not during results/menu (use results RGB there).

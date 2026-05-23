@@ -545,6 +545,9 @@ void loop(){
   if (now - lastLCD > lcdPollMs) {
     if (rhythmGameDrawLcd(now)) {
       lastLCD = now;
+      // I2C LCD writes block for ms — refill MP3 ring immediately after.
+      if (rhythmGameOwnsAudioOutput())
+        rhythmGameAudioPumpN(3);
     } else if (!rhythmGameIsActive() && showScaleSelection){
       // Show scale selection display
       lcdPrintScaleSelection(scaleIndex, now);

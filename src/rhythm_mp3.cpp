@@ -71,10 +71,11 @@ static void beatTrackerReset() {
 
 static void beatTrackerFeedFrame(int16_t mono) {
   float x = mono * (1.f / 32768.f);
-  // Speedcore kicks: heavy sub LP + low-mid body (not upper-mid hats).
+  // Pure sub-bass kick detection — no mid-band bleed so snares/hats/synths
+  // don't fire false onsets.  Cutoff ~630 Hz (coeff 0.09).
   s_lpBass = s_lpBass * 0.91f + x * 0.09f;
-  s_lpMid = s_lpMid * 0.82f + (x - s_lpBass) * 0.18f;
-  float kickBody = s_lpBass + 0.42f * s_lpMid;
+  s_lpMid  = s_lpMid  * 0.82f + (x - s_lpBass) * 0.18f;
+  float kickBody = s_lpBass;   // sub-bass only; mid-band removed to avoid over-firing
   float eb = kickBody * kickBody;
   float em = s_lpMid * s_lpMid;
   float fluxB = eb - s_prevBassE;
@@ -84,7 +85,8 @@ static void beatTrackerFeedFrame(int16_t mono) {
 
   s_fluxEma = s_fluxEma * 0.995f + fabsf(fluxB) * 0.005f;
   s_fluxVar = s_fluxVar * 0.997f + (fabsf(fluxB) - s_fluxEma) * (fabsf(fluxB) - s_fluxEma) * 0.003f;
-  float thr = s_fluxEma + 1.65f * sqrtf(fmaxf(s_fluxVar, 1e-12f));
+  // Raised to 2.2σ (was 1.65) — stricter threshold, only strong kicks pass.
+  float thr = s_fluxEma + 2.2f * sqrtf(fmaxf(s_fluxVar, 1e-12f));
 
   uint32_t tms = (uint32_t)(s_monoFrames * 1000ull / (uint64_t)s_streamSr);
   s_monoFrames++;
@@ -96,7 +98,9 @@ static void beatTrackerFeedFrame(int16_t mono) {
     s_visMidMagSm = s_visMidMagSm * 0.58f + mm * 0.42f;
   }
 
-  if (fluxB > thr && (tms - s_lastBassOnsetMs) > 105) {
+  // 220 ms refractory = max ~4.5 kicks/sec; was 105 ms which allowed 9/sec and
+  // caused screen-flooding on busy mid-range content.
+  if (fluxB > thr && (tms - s_lastBassOnsetMs) > 220) {
     float ex = (fluxB - thr) / fmaxf(thr * 0.38f, 1e-5f);
     if (ex > 1.35f)
       ex = 1.35f;
@@ -598,8 +602,8 @@ void rhythmStreamLoop() {
     // think the song ended instantly (results / emojis / next-track) with no audible playback.
     const uint32_t mp3AgeMs = millis() - s_playStartMs;
     constexpr uint32_t kMp3StartGraceMs = 1500;
-    // More loop() calls per main iteration → keep bitstream/PPCM fed when the rest of the sketch is busy.
-    constexpr int kMp3LoopsPerPump = 16;
+    // More loop() calls per pump — keep PCM fed when LCD / lane logic blocks the main loop.
+    constexpr int kMp3LoopsPerPump = 28;
     if (s_mp3 && s_mp3->isRunning()) {
       for (int k = 0; k < kMp3LoopsPerPump && s_mp3->isRunning(); k++) {
         if (!s_mp3->loop()) {
@@ -645,6 +649,14 @@ uint32_t rhythmStreamElapsedMs() {
     return el - cur;
   }
   return el;
+}
+
+uint32_t rhythmStreamAudioPositionMs(void) {
+  if (s_mode == SM_NONE)
+    return 0;
+  if (s_streamSr < 8000u)
+    return rhythmStreamElapsedMs();
+  return (uint32_t)(s_monoFrames * 1000ull / (uint64_t)s_streamSr);
 }
 
 #if defined(ARDUINO_ARCH_ESP32)
