@@ -68,6 +68,12 @@ void setLED_RGB(uint8_t i,uint8_t r,uint8_t g,uint8_t b){
   pcaSet(MAP[i].b.drv,MAP[i].b.ch,b);
 }
 
+void setLED_RGBRhythmFront(uint8_t i, uint8_t r, uint8_t g, uint8_t b) {
+  pcaSet(MAP[i].r.drv, MAP[i].r.ch, r);
+  pcaSet(MAP[i].g.drv, MAP[i].g.ch, g);
+  pcaSet(MAP[i].b.drv, MAP[i].b.ch, b);
+}
+
 void hsv2rgb(float h,float s,float v,uint8_t &r,uint8_t &g,uint8_t &b){
   while(h<0)h+=360; while(h>=360)h-=360;
   float c=v*s, x=c*(1.0f-fabsf(fmodf(h/60.0f,2.0f)-1.0f)), m=v-c;

@@ -1758,20 +1758,36 @@ static void lcdRetroTitleScrollSegment(char *out, size_t outSz, const char *titl
   out[visibleCols] = '\0';
 }
 
-// ~8.2s per full marquee cycle for long titles; short titles use a relaxed column dwell time.
+// ~14s per full marquee cycle for long titles (slow enough to read comfortably).
+// Short titles dwell statically per col with a generous timer so any partial-col
+// re-render between frames doesn't smear the text.
 static unsigned lcdRetroTitleScrollMsPerCol(const char *title, unsigned visibleCols) {
   size_t L = title ? strlen(title) : 0;
   if (L <= visibleCols)
-    return 380u;
+    return 600u;
   const unsigned gap = 3;
   unsigned cycle = (unsigned)L + gap;
-  const unsigned targetCycleMs = 8200u;
+  const unsigned targetCycleMs = 14000u;
   unsigned mpc = targetCycleMs / cycle;
-  if (mpc < 110u)
-    mpc = 110u;
-  if (mpc > 450u)
-    mpc = 450u;
+  if (mpc < 220u)
+    mpc = 220u;
+  if (mpc > 700u)
+    mpc = 700u;
   return mpc;
+}
+
+uint32_t lcdRetroTitleScrollDurationMs(const char *songTitle, unsigned visibleCols) {
+  size_t L = songTitle ? strlen(songTitle) : 0;
+  if (visibleCols == 0)
+    visibleCols = 20;
+  if (L == 0)
+    return 700u;
+  if (L <= visibleCols)
+    return 1100u;
+  const unsigned gap = 3;
+  unsigned cycle = (unsigned)L + gap;
+  unsigned mpc = lcdRetroTitleScrollMsPerCol(songTitle, visibleCols);
+  return (uint32_t)cycle * mpc + 500u;
 }
 
 static uint32_t lcdRetroFlashHash(uint32_t t, unsigned idx, unsigned salt) {
@@ -1798,7 +1814,7 @@ void lcdRetroFlashScreen(uint32_t now, uint32_t flashStartMs) {
 
   if (t >= tGlitchEnd) {
     static const char kPlain0[] = "    RHYTHM MODE    ";
-    static const char kPlain1[] = " 38+39 2s = exit   ";
+    static const char kPlain1[] = "38+39 3s=menu 4s=out";
     lcd.setCursor(0, 0);
     lcd.print(kPlain0);
     lcd.setCursor(0, 1);
@@ -1868,10 +1884,10 @@ void lcdRetroMenu(int selectedIdx, const RhythmSongRow *rows, int numRows, uint3
     lcd.setCursor(0, 2);
     lcd.print("38+39 1.5S=ENTER ");
     lcd.setCursor(0, 3);
-    lcd.print("38+39 2S=EXIT MENU");
+    lcd.print("38+39 3s/4s EXIT   ");
     return;
   }
-  lcd.print("16/46 SC R=P L=X    ");
+  lcd.print("16/46 SC R=PLAY     ");
   for (int r = 0; r < 3; r++) {
     int idx = selectedIdx - 1 + r;
     lcd.setCursor(0, 1 + r);
@@ -1892,86 +1908,210 @@ void lcdRetroMenu(int selectedIdx, const RhythmSongRow *rows, int numRows, uint3
   }
 }
 
-// Rows 3–4 during play: full-width two-row beat lane (upper `.` trail, lower `o` → `|` / `^` / `*`).
-static void lcdRetroFillPlayingBeatAnim(char *row2, char *row3, uint16_t approxBpm, uint32_t msToNextBeat,
-                                        uint32_t wallMs, uint32_t lastTapWallMs) {
-  for (int i = 0; i < 20; i++) {
-    row2[i] = ' ';
-    row3[i] = ' ';
-  }
-  row2[20] = row3[20] = '\0';
+// Beat lane (20 cols): hearts travel right → left through the entire row, passing
+// THROUGH the bracket interior (cols 9, 10, 11).  Only the two rails at cols 8 and 12
+// are reserved for the bracket frame; every other column is part of the heart runway.
+//
+// Each entry in the supplied beat array generates exactly one heart.  At display time
+// we walk the array and place each beat at:
+//   col = kHitColC + (beatMs - songRelMs) * kCpp / scrollPeriodMs
+// The caller supplies a precomputed beat list (chart-time grid) — this is the only
+// source of "future" hearts since real-time bass detection only sees the past.  The
+// scroll period is chart-derived (constant during a song) so motion is smooth.
+static const int  kHitColL      = 8;   // left rail
+static const int  kHitColC      = 10;  // strike point — where a heart sits when its onset hits
+static const int  kHitColR      = 12;  // right rail
+static const char kBeatChar     = '\x01'; // CGRAM slot 1 = heart (defined at play-start)
 
-  float bpm = (float)approxBpm;
-  if (bpm < 40.f)
-    bpm = 40.f;
-  uint32_t period = (uint32_t)(60000.f / bpm + 0.5f);
-  if (period < 1u)
-    period = 1u;
-
-  const int laneW = 20;
-  const int C = 10;
-  float pf = (float)period;
-
-  for (int k = 0; k < 8; k++) {
-    uint32_t t = msToNextBeat + (uint32_t)k * period;
-    int colHi = C + (int)((float)t / pf * 1.55f + 0.5f);
-    if (colHi < 0)
-      colHi = 0;
-    if (colHi >= laneW)
-      colHi = laneW - 1;
-    if (t > 120u && row2[colHi] == ' ')
-      row2[colHi] = '.';
-  }
-
-  for (int k = 0; k < 7; k++) {
-    uint32_t t = msToNextBeat + (uint32_t)k * period;
-    int col = C + (int)((float)t / pf * 2.05f + 0.5f);
-    if (col < 0)
-      col = 0;
-    if (col >= laneW)
-      col = laneW - 1;
-    if (col == C && k == 0 && msToNextBeat < 45u)
-      continue;
-    char add = (row3[col] == ' ') ? 'o' : 'O';
-    row3[col] = add;
-  }
-
-  bool tapFlash = lastTapWallMs != 0 && (wallMs - lastTapWallMs) < 200u;
-  if (tapFlash)
-    row3[C] = '*';
-  else if (msToNextBeat < 90u)
-    row3[C] = '^';
-  else
-    row3[C] = '|';
-
-  if (row2[C] == '.')
-    row2[C] = ' ';
+// Heart shape in CGRAM slot 1 — written when entering RG_PLAYING.
+static void lcdRetroDefineBeatChar(void) {
+  uint8_t d[8] = { 0x1B, 0x1F, 0x0E, 0x0E, 0x04, 0x04, 0x00, 0x00 };
+  lcd.createChar(1, d);
 }
 
-void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs, uint16_t approxBpm, uint32_t wallMs,
-                     uint32_t msToNextBeat, uint32_t lastTapWallMs) {
-  char line[21];
-  char rowAnim2[21];
-  char rowAnim3[21];
-  lcd.setCursor(0, 0);
-  const unsigned playTitleCols = 20;
-  unsigned playMpc = lcdRetroTitleScrollMsPerCol(title, playTitleCols);
-  lcdRetroTitleScrollSegment(line, sizeof(line), title, wallMs, playTitleCols, playMpc);
-  lcd.print(line);
+static void lcdRetroFillBeatStars(char *row, uint32_t scrollPeriodMs, uint32_t songRelMs,
+                                  const uint32_t *beats, int nBeats) {
+  const int W = 20;
+  const int kCpp = 9;  // cols per scroll-period — see header comment
 
+  for (int i = 0; i < W; i++)
+    row[i] = ' ';
+  row[W] = '\0';
+
+  if (!beats || nBeats <= 0) return;
+  uint32_t period = (scrollPeriodMs > 0u) ? scrollPeriodMs : 1u;
+
+  // Visible time window: ~kHitColC right of now (~1.1 periods future) and ~9 cols
+  // left of now (~1 period past).  We iterate every onset; the col-bounds check
+  // skips anything off-screen so the loop is cheap even for long song arrays.
+  for (int i = 0; i < nBeats; i++) {
+    int64_t dt = (int64_t)beats[i] - (int64_t)songRelMs;
+    int64_t dCol = (dt * (int64_t)kCpp) / (int64_t)period;
+    int col = kHitColC + (int)dCol;
+
+    if (col < 0 || col >= W) continue;
+    if (col == kHitColL || col == kHitColR) continue;  // rail cells are reserved
+    if (row[col] != kBeatChar) row[col] = kBeatChar;
+  }
+}
+
+// Bracket frame for row 2: vertical rails at cols 8 and 12.  No centre indicator —
+// the heart passes through cols 9/10/11 on its way across the row.
+static void lcdRetroOverlayHitRails(char *row) {
+  row[kHitColL] = '|';
+  row[kHitColR] = '|';
+}
+
+// Bracket frame for row 3: chevron rails at cols 8 and 12.  Same behaviour as above.
+static void lcdRetroOverlayHitWindow(char *row) {
+  row[kHitColL] = '>';
+  row[kHitColR] = '<';
+}
+
+static void lcdRetroPad20(char *out, const char *src) {
+  for (int i = 0; i < 20; i++)
+    out[i] = (src && src[i]) ? src[i] : ' ';
+  out[20] = '\0';
+}
+
+// snprintf time line is often <20 chars; pad so lcd.print clears cols 14–19 (e.g. get-ready "111111" leftovers).
+// HIT label flashes for 250ms after each player tap; score % stays in its fixed slot so
+// the percent never moves around as HIT comes and goes.
+static const uint32_t kHitFlashMs = 250u;
+
+static void lcdRetroFormatTimeLine(char *row21, uint32_t elapsedMs, uint32_t durationMs, bool paused, int livePct,
+                                    uint32_t wallMs, uint32_t lastTapWallMs) {
   uint32_t e = elapsedMs / 1000;
   uint32_t d = durationMs / 1000;
-  lcd.setCursor(0, 1);
-  snprintf(line, sizeof(line), "~%u BPM %u:%02u/%u:%02u", (unsigned)approxBpm, (unsigned)(e / 60), (unsigned)(e % 60),
-           (unsigned)(d / 60), (unsigned)(d % 60));
-  line[20] = '\0';
-  lcd.print(line);
+  if (d == 0)
+    d = 1;
+  if (paused) {
+    snprintf(row21, 21, "%u:%02u / %u:%02u ||", (unsigned)(e / 60), (unsigned)(e % 60), (unsigned)(d / 60),
+             (unsigned)(d % 60));
+  } else if (livePct >= 0) {
+    bool flashHit = (lastTapWallMs != 0) && ((wallMs - lastTapWallMs) < kHitFlashMs);
+    const char *hitLabel = flashHit ? "HIT" : "   ";
+    snprintf(row21, 21, "%u:%02u/%u:%02u %s %3d%%", (unsigned)(e / 60), (unsigned)(e % 60), (unsigned)(d / 60),
+             (unsigned)(d % 60), hitLabel, livePct);
+  } else {
+    snprintf(row21, 21, "%u:%02u / %u:%02u   ", (unsigned)(e / 60), (unsigned)(e % 60), (unsigned)(d / 60),
+             (unsigned)(d % 60));
+  }
+  int n = (int)strlen(row21);
+  if (n < 0)
+    n = 0;
+  for (int i = n; i < 20; i++)
+    row21[i] = ' ';
+  row21[20] = '\0';
+}
 
-  lcdRetroFillPlayingBeatAnim(rowAnim2, rowAnim3, approxBpm, msToNextBeat, wallMs, lastTapWallMs);
+void lcdRetroResumeCountdown(uint32_t now, uint32_t startMs, uint32_t countEachMs, const char *title, uint32_t elapsedMs,
+                             uint32_t durationMs) {
+  uint32_t t = now - startMs;
+  char row0[21];
+  lcdRetroPad20(row0, title);
+  char row1[21];
+  lcdRetroFormatTimeLine(row1, elapsedMs, durationMs, false, -1, 0u, 0u);
+
+  char countCh = '3';
+  if (t >= countEachMs * 2u)
+    countCh = '1';
+  else if (t >= countEachMs)
+    countCh = '2';
+
+  char fill[21];
+  for (int i = 0; i < 20; i++)
+    fill[i] = countCh;
+  fill[20] = '\0';
+
+  lcd.setCursor(0, 0);
+  lcd.print(row0);
+  lcd.setCursor(0, 1);
+  lcd.print(row1);
   lcd.setCursor(0, 2);
-  lcd.print(rowAnim2);
+  lcd.print(fill);
   lcd.setCursor(0, 3);
-  lcd.print(rowAnim3);
+  lcd.print(fill);
+}
+
+static uint32_t s_playLastElapsedMs = 0xffffffffu;
+static char s_playLastRow0[21];
+static char s_playLastRow1[21];
+static char s_playLastRow2[21];
+static char s_playLastRow3[21];
+static bool s_playRowsInit = false;
+
+void lcdRetroPlayingInvalidate(void) {
+  lcdRetroDefineBeatChar();
+  s_playRowsInit = false;
+  memset(s_playLastRow0, ' ', 20);
+  memset(s_playLastRow1, ' ', 20);
+  memset(s_playLastRow2, ' ', 20);
+  memset(s_playLastRow3, ' ', 20);
+  s_playLastRow0[20] = s_playLastRow1[20] = s_playLastRow2[20] = s_playLastRow3[20] = '\0';
+}
+
+void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs, uint32_t beatPeriodMs, uint32_t wallMs,
+                     uint32_t songRelMs, const uint32_t *beats, int nBeats,
+                     uint32_t lastTapWallMs, bool paused, int liveScorePct) {
+  if (!s_playRowsInit || elapsedMs < s_playLastElapsedMs) {
+    lcdRetroDefineBeatChar();
+    memset(s_playLastRow0, ' ', 20);
+    memset(s_playLastRow1, ' ', 20);
+    memset(s_playLastRow2, ' ', 20);
+    memset(s_playLastRow3, ' ', 20);
+    s_playLastRow0[20] = s_playLastRow1[20] = s_playLastRow2[20] = s_playLastRow3[20] = '\0';
+    s_playRowsInit = true;
+  }
+  s_playLastElapsedMs = elapsedMs;
+
+  char row0[21];
+  const unsigned playTitleCols = 20;
+  size_t tlen = title ? strlen(title) : 0;
+  if (tlen <= playTitleCols) {
+    lcdRetroPad20(row0, title);
+  } else {
+    unsigned mpc = lcdRetroTitleScrollMsPerCol(title, playTitleCols);
+    lcdRetroTitleScrollSegment(row0, sizeof(row0), title, elapsedMs, playTitleCols, mpc);
+  }
+
+  char row1[21];
+  lcdRetroFormatTimeLine(row1, elapsedMs, durationMs, paused, paused ? -1 : liveScorePct, wallMs, lastTapWallMs);
+
+  char row2[21];
+  char row3[21];
+  if (paused) {
+    lcdRetroPad20(row2, "== PAUSED 16+46 3s =");
+    lcdRetroPad20(row3, "  HOLD 3s TO RESUME  ");
+  } else {
+    lcdRetroFillBeatStars(row2, beatPeriodMs, songRelMs, beats, nBeats);
+    lcdRetroOverlayHitRails(row2);
+    lcdRetroFillBeatStars(row3, beatPeriodMs, songRelMs, beats, nBeats);
+    lcdRetroOverlayHitWindow(row3);
+  }
+
+  // Per-cell delta update — only writes the columns that actually changed.  Avoids
+  // the visible flicker / "dim heart" effect of re-printing the entire 20-char row
+  // every frame at 12.5 fps.  Stable cells (rails, time digits, etc.) never blink.
+  auto deltaWriteRow = [](int rowIdx, const char *fresh, char *last) {
+    int c = 0;
+    while (c < 20) {
+      if (fresh[c] == last[c]) { c++; continue; }
+      int runStart = c;
+      while (c < 20 && fresh[c] != last[c]) {
+        last[c] = fresh[c];
+        c++;
+      }
+      lcd.setCursor(runStart, rowIdx);
+      for (int i = runStart; i < c; i++)
+        lcd.write((uint8_t)fresh[i]);
+    }
+    last[20] = '\0';
+  };
+  deltaWriteRow(0, row0, s_playLastRow0);
+  deltaWriteRow(1, row1, s_playLastRow1);
+  deltaWriteRow(2, row2, s_playLastRow2);
+  deltaWriteRow(3, row3, s_playLastRow3);
 }
 
 void lcdRetroStillTherePrompt(uint32_t now, uint32_t promptStartMs) {
@@ -1987,16 +2127,17 @@ void lcdRetroStillTherePrompt(uint32_t now, uint32_t promptStartMs) {
   lcd.setCursor(0, 0);
   lcd.print("STILL THERE?        ");
   lcd.setCursor(0, 1);
-  lcd.print("TAP ANY BUTTON TO   ");
+  lcd.print("TAP ANY BUTTON      ");
   lcd.setCursor(0, 2);
-  lcd.print("RESUME PLAY         ");
+  lcd.print("                    ");
   lcd.setCursor(0, 3);
   lcd.printf("AUTO-IDLE IN %lus   ", (unsigned long)remSec);
 }
 
-void lcdRetroGetReady(uint32_t now, uint32_t getReadyStartMs, const char *songTitle, uint32_t readyMs,
+void lcdRetroGetReady(uint32_t now, uint32_t getReadyStartMs, const char *songTitle, uint32_t titleScrollMs,
                       uint32_t countEachMs) {
   uint32_t t = now - getReadyStartMs;
+  uint32_t scrollElapsed = t;
   char fill[21];
   for (int i = 0; i < 20; i++)
     fill[i] = '.';
@@ -2013,25 +2154,25 @@ void lcdRetroGetReady(uint32_t now, uint32_t getReadyStartMs, const char *songTi
   }
 
   uint8_t phase;
-  if (t < readyMs)
+  if (t < titleScrollMs)
     phase = 0;
-  else if (t < readyMs + countEachMs)
+  else if (t < titleScrollMs + countEachMs)
     phase = 3;
-  else if (t < readyMs + 2u * countEachMs)
+  else if (t < titleScrollMs + 2u * countEachMs)
     phase = 2;
   else
     phase = 1;
 
   char row0[21];
   unsigned grMpc = lcdRetroTitleScrollMsPerCol(songTitle, 20u);
-  lcdRetroTitleScrollSegment(row0, sizeof(row0), songTitle, now, 20u, grMpc);
+  lcdRetroTitleScrollSegment(row0, sizeof(row0), songTitle, scrollElapsed, 20u, grMpc);
 
   char countCh = '.';
-  if (t >= readyMs + 2u * countEachMs)
+  if (t >= titleScrollMs + 2u * countEachMs)
     countCh = '1';
-  else if (t >= readyMs + countEachMs)
+  else if (t >= titleScrollMs + countEachMs)
     countCh = '2';
-  else if (t >= readyMs)
+  else if (t >= titleScrollMs)
     countCh = '3';
 
   bool phaseChanged = (phase != s_lastPhase);
@@ -2047,7 +2188,7 @@ void lcdRetroGetReady(uint32_t now, uint32_t getReadyStartMs, const char *songTi
     memcpy(s_lastRow0, row0, sizeof(s_lastRow0));
     s_lastPhase = phase;
 
-    if (t < readyMs) {
+    if (t < titleScrollMs) {
       lcd.setCursor(0, 1);
       lcd.print(fill);
       lcd.setCursor(0, 2);
@@ -2090,7 +2231,7 @@ void lcdRetroResultsScore(const char *title, char grade, int mainPct, int bonusP
     lcd.print(":3 :> !_! :O");
 
   lcd.setCursor(0, 3);
-  lcd.print("16=MENU  46=NEXT TRK");
+  lcd.print("FRNT_LEFT=MENU  FRNT_RGHT=NEXT TRK");
 }
 
 void lcdRetroResultsPrompt(uint32_t wallMs, const char *nextSongTitle) {

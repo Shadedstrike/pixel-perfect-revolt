@@ -55,6 +55,8 @@ extern uint16_t lastPWM_B[16];
 void getPressColorForGPIO(int gpio, uint8_t &r, uint8_t &g, uint8_t &b);
 void pcaSet(uint8_t drv, uint8_t ch, uint8_t v);
 void setLED_RGB(uint8_t i, uint8_t r, uint8_t g, uint8_t b);
+// Front 16/46 rhythm beat flash — full drive (setLED_RGB applies FRONT_LED_BRIGHTNESS_SCALE).
+void setLED_RGBRhythmFront(uint8_t i, uint8_t r, uint8_t g, uint8_t b);
 void hsv2rgb(float h, float s, float v, uint8_t &r, uint8_t &g, uint8_t &b);
 void playBootAnimation(); // Boot-up LED animation: green/turquoise pulsing
 void applyVFloor(uint8_t &r, uint8_t &g, uint8_t &b, float floorV);

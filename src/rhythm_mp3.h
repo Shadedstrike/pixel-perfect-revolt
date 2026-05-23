@@ -29,11 +29,13 @@ void rhythmMp3Stop();
 // Returns true if playback started (I2S handed to MP3 stack). Path is SD path e.g. /rhythm/track.mp3.
 bool rhythmMp3TryPlay(const char *sdPath);
 
-// Synthetic fallback: keeps existing IDF I2S driver, plays kick grid.
+// Internal kick-grid writer (not used in rhythm game — rhythm mode is MP3-only).
 void rhythmSynthStart(uint16_t bpm, uint16_t beatOffsetMs, uint32_t durationMs);
 void rhythmSynthStop();
 
 bool rhythmStreamIsActive();
+bool rhythmStreamIsPaused();
+void rhythmStreamSetPaused(bool paused);
 void rhythmStreamLoop();
 // 1.f = full output; multiply MP3/synth PCM (e.g. AFK exit fade). Reset to 1 on stop / new playback.
 void rhythmStreamSetFadeMul(float linear01);
@@ -44,12 +46,21 @@ uint32_t rhythmStreamElapsedMs();
 // BPM from last opened MP3 (ID3 TBPM / filename) or synth start; 0 if unknown. Used to refresh chart vs scan default.
 uint16_t rhythmStreamSourceBpm(void);
 
-// Bass / mid-band onset times (ms from song start) for bonus scoring — filled during MP3 or synth.
+// Low-band kick onset times (ms from song start) — primary beats for scoring / LED feedback.
+void rhythmStreamGetBassOnsets(const uint32_t **outPtr, int *outCount);
+
+// Total number of oldest bass onsets that have been evicted from the ring since
+// playback began. Use to keep "last judged onset" indices valid after sliding.
+uint32_t rhythmStreamBassOnsetsDropped(void);
+
+// Mid-band onset times for bonus scoring — filled during MP3 or synth.
 void rhythmStreamGetBonusOnsets(const uint32_t **outPtr, int *outCount);
 
 // Audio-reactive levels for LEDs (not used for scoring). Bass ≈ low-band flux / kicks; mid ≈ repetitive transients.
 // Pulses decay with sample-accurate song time; levels are smoothed envelope. No-op when stream inactive.
 void rhythmStreamGetMusicVis(float *bassPulse, float *midPulse, float *bassLevel, float *midLevel);
+// Slower-decay bass/kick envelope for front 16/46 LEDs (0..1); holds through the visible part of each hit.
+void rhythmStreamGetBassLedEnvelope(float *envelope01);
 
 // True after decoded audio has fired at least one strong bass onset (kick). False during quiet intros.
 bool rhythmStreamHasStrongBassOnsetYet(void);

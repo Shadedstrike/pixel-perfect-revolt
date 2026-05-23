@@ -44,10 +44,16 @@ void lcdRetroFlashScreen(uint32_t now, uint32_t flashStartMs);
 // Sum of intro + plain-text phases; rhythm_game waits this long before RG_MENU.
 uint32_t lcdRetroFlashDurationMs(void);
 void lcdRetroMenu(int selectedIdx, const RhythmSongRow *rows, int numRows, uint32_t wallMs);
-void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs, uint16_t approxBpm, uint32_t wallMs,
-                     uint32_t msToNextBeat, uint32_t lastTapWallMs);
+void lcdRetroPlayingInvalidate(void);
+void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs, uint32_t beatPeriodMs, uint32_t wallMs,
+                     uint32_t songRelMs, const uint32_t *beats, int nBeats,
+                     uint32_t lastTapWallMs, bool paused, int liveScorePct);
+void lcdRetroResumeCountdown(uint32_t now, uint32_t startMs, uint32_t countEachMs, const char *title, uint32_t elapsedMs,
+                             uint32_t durationMs);
 void lcdRetroStillTherePrompt(uint32_t now, uint32_t promptStartMs);
-void lcdRetroGetReady(uint32_t now, uint32_t getReadyStartMs, const char *songTitle, uint32_t readyMs,
+// Ms for one full title marquee (long titles) or a short read pause; use before 3-2-1 countdown.
+uint32_t lcdRetroTitleScrollDurationMs(const char *songTitle, unsigned visibleCols);
+void lcdRetroGetReady(uint32_t now, uint32_t getReadyStartMs, const char *songTitle, uint32_t titleScrollMs,
                       uint32_t countEachMs);
 void lcdRetroResultsScore(const char *title, char grade, int mainPct, int bonusPct, int totalPct, uint32_t now);
 void lcdRetroResultsPrompt(uint32_t wallMs, const char *nextSongTitle);

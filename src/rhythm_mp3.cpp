@@ -27,9 +27,18 @@
 #endif
 
 // --- Onset tracker (bass flux ≈ "kick band"; mid flux for bonus) ------------
-static constexpr int kMaxOnsets = 128;
+// Buffer holds enough onsets for ~17 min @ 1 kick/sec or ~4 min @ 4 kicks/sec.
+// When full we slide the window (drop oldest) so a long/dense song never silently
+// stops generating onsets — see lcd hearts and scoring rely on a non-empty list.
+static constexpr int kMaxOnsets = 1024;
+static uint32_t s_bassOnsetMs[kMaxOnsets];
+static int s_bassOnsetCount = 0;
 static uint32_t s_midBonusMs[kMaxOnsets];
 static int s_midBonusCount = 0;
+// Counts of onsets that have rolled off the front of each ring (for external
+// index trackers that need to compensate when entries get evicted).
+static uint32_t s_bassOnsetDropped = 0;
+static uint32_t s_midBonusDropped = 0;
 static uint64_t s_monoFrames = 0;
 static uint32_t s_playStartMs = 0;
 static uint32_t s_streamSr = SR;
@@ -46,7 +55,10 @@ static float s_lastBassHitStr = 1.f;
 static float s_lastMidHitStr = 0.9f;
 
 static void beatTrackerReset() {
+  s_bassOnsetCount = 0;
   s_midBonusCount = 0;
+  s_bassOnsetDropped = 0;
+  s_midBonusDropped = 0;
   s_monoFrames = 0;
   s_lpBass = s_lpMid = 0.f;
   s_prevBassE = s_prevMidE = 0.f;
@@ -59,9 +71,11 @@ static void beatTrackerReset() {
 
 static void beatTrackerFeedFrame(int16_t mono) {
   float x = mono * (1.f / 32768.f);
-  s_lpBass = s_lpBass * 0.88f + x * 0.12f;
-  s_lpMid = s_lpMid * 0.70f + (x - s_lpBass) * 0.30f;
-  float eb = s_lpBass * s_lpBass;
+  // Speedcore kicks: heavy sub LP + low-mid body (not upper-mid hats).
+  s_lpBass = s_lpBass * 0.91f + x * 0.09f;
+  s_lpMid = s_lpMid * 0.82f + (x - s_lpBass) * 0.18f;
+  float kickBody = s_lpBass + 0.42f * s_lpMid;
+  float eb = kickBody * kickBody;
   float em = s_lpMid * s_lpMid;
   float fluxB = eb - s_prevBassE;
   float fluxM = em - s_prevMidE;
@@ -70,7 +84,7 @@ static void beatTrackerFeedFrame(int16_t mono) {
 
   s_fluxEma = s_fluxEma * 0.995f + fabsf(fluxB) * 0.005f;
   s_fluxVar = s_fluxVar * 0.997f + (fabsf(fluxB) - s_fluxEma) * (fabsf(fluxB) - s_fluxEma) * 0.003f;
-  float thr = s_fluxEma + 2.5f * sqrtf(fmaxf(s_fluxVar, 1e-12f));
+  float thr = s_fluxEma + 1.65f * sqrtf(fmaxf(s_fluxVar, 1e-12f));
 
   uint32_t tms = (uint32_t)(s_monoFrames * 1000ull / (uint64_t)s_streamSr);
   s_monoFrames++;
@@ -82,24 +96,48 @@ static void beatTrackerFeedFrame(int16_t mono) {
     s_visMidMagSm = s_visMidMagSm * 0.58f + mm * 0.42f;
   }
 
-  if (fluxB > thr && (tms - s_lastBassOnsetMs) > 115) {
-    float ex = (fluxB - thr) / fmaxf(thr * 0.42f, 1e-5f);
+  if (fluxB > thr && (tms - s_lastBassOnsetMs) > 105) {
+    float ex = (fluxB - thr) / fmaxf(thr * 0.38f, 1e-5f);
     if (ex > 1.35f)
       ex = 1.35f;
     s_lastBassHitStr = 0.42f + 0.58f * (ex / 1.35f);
     s_lastBassOnsetMs = tms;
+    if (s_bassOnsetCount < kMaxOnsets) {
+      s_bassOnsetMs[s_bassOnsetCount++] = tms;
+    } else {
+      // Buffer full: slide window left, drop oldest, append newest. Keeps the
+      // most recent kMaxOnsets entries so display + scoring keep working on
+      // long/dense songs.
+      memmove(s_bassOnsetMs, s_bassOnsetMs + 1, (kMaxOnsets - 1) * sizeof(s_bassOnsetMs[0]));
+      s_bassOnsetMs[kMaxOnsets - 1] = tms;
+      s_bassOnsetDropped++;
+    }
   }
-  float mthr = s_fluxEma * 0.6f + 1.2f * sqrtf(fmaxf(s_fluxVar, 1e-12f));
-  if (fluxM > mthr && (tms - s_lastMidOnsetMs) > 90) {
+  float mthr = s_fluxEma * 0.92f + 2.1f * sqrtf(fmaxf(s_fluxVar, 1e-12f));
+  if (fluxM > mthr && (tms - s_lastMidOnsetMs) > 110) {
     float mx = (fluxM - mthr) / fmaxf(mthr * 0.48f, 1e-5f);
     if (mx > 1.4f)
       mx = 1.4f;
     s_lastMidHitStr = 0.35f + 0.65f * (mx / 1.4f);
     s_lastMidOnsetMs = tms;
-    if (s_midBonusCount < kMaxOnsets)
+    if (s_midBonusCount < kMaxOnsets) {
       s_midBonusMs[s_midBonusCount++] = tms;
+    } else {
+      memmove(s_midBonusMs, s_midBonusMs + 1, (kMaxOnsets - 1) * sizeof(s_midBonusMs[0]));
+      s_midBonusMs[kMaxOnsets - 1] = tms;
+      s_midBonusDropped++;
+    }
   }
 }
+
+void rhythmStreamGetBassOnsets(const uint32_t **outPtr, int *outCount) {
+  if (outPtr)
+    *outPtr = s_bassOnsetMs;
+  if (outCount)
+    *outCount = s_bassOnsetCount;
+}
+
+uint32_t rhythmStreamBassOnsetsDropped(void) { return s_bassOnsetDropped; }
 
 void rhythmStreamGetBonusOnsets(const uint32_t **outPtr, int *outCount) {
   if (outPtr)
@@ -128,34 +166,29 @@ static AudioGeneratorMP3 *s_mp3 = nullptr;
 // 64 KiB stressed heap on some tracks; 32 KiB is usually enough and reduces malloc stalls.
 static constexpr uint32_t kMp3SdReadAheadBytes = 32 * 1024;
 
-// Mild compression above ~0.89 FS — avoids harsh digital clip in AudioOutput::Amplify() on hot masters.
-static int32_t rhythmMp3SoftPeak(int32_t v) {
-  const int32_t t = 29200;
-  if (v > t) {
-    int32_t e = v - t;
-    return t + (e * 20000) / (20000 + e);
-  }
-  if (v < -t) {
-    int32_t e = -t - v;
-    return -t - (e * 20000) / (20000 + e);
-  }
-  return v;
+static int16_t rhythmMp3ClampS16(int32_t v) {
+  if (v > 32767)
+    return 32767;
+  if (v < -32768)
+    return -32768;
+  return (int16_t)v;
 }
 
 class TappedAudioOutput : public AudioOutputI2S {
 public:
-  // dma_buf_count: more I2S DMA slots = more ms of PCM queued when decode/SD stalls briefly.
-  TappedAudioOutput()
-      : AudioOutputI2S(0, AudioOutputI2S::EXTERNAL_I2S, 32, AudioOutputI2S::APLL_ENABLE) {}
+  // Match audioInit DMA depth; APLL off — APLL on ESP32-S3 often causes crackly/static I2S.
+  TappedAudioOutput() : AudioOutputI2S(0, AudioOutputI2S::EXTERNAL_I2S, 16, 0) {}
+
+  bool SetRate(int hz) override {
+    if (hz >= 8000 && hz <= 48000)
+      s_streamSr = (uint32_t)hz;
+    return AudioOutputI2S::SetRate(hz);
+  }
+
   bool ConsumeSample(int16_t sample[2]) override {
-    int32_t L = ((int32_t)sample[0] * 250) >> 8;
-    int32_t R = ((int32_t)sample[1] * 250) >> 8;
     float g = s_streamFadeMul;
-    L = (int32_t)((float)L * g);
-    R = (int32_t)((float)R * g);
-    L = rhythmMp3SoftPeak(L);
-    R = rhythmMp3SoftPeak(R);
-    int16_t adj[2] = {(int16_t)L, (int16_t)R};
+    int16_t adj[2] = {rhythmMp3ClampS16((int32_t)((float)sample[0] * g)),
+                      rhythmMp3ClampS16((int32_t)((float)sample[1] * g))};
     int32_t m = ((int32_t)adj[0] + (int32_t)adj[1]) >> 1;
     beatTrackerFeedFrame((int16_t)m);
     return AudioOutputI2S::ConsumeSample(adj);
@@ -168,6 +201,9 @@ static TappedAudioOutput *s_out = nullptr;
 enum StreamMode : uint8_t { SM_NONE, SM_MP3, SM_SYNTH };
 static StreamMode s_mode = SM_NONE;
 static uint16_t s_streamSourceBpm = 0;
+static bool s_streamPaused = false;
+static uint32_t s_pauseStartedMs = 0;
+static uint32_t s_pauseAccumMs = 0;
 
 void rhythmStreamGetMusicVis(float *bassPulse, float *midPulse, float *bassLevel, float *midLevel) {
   float bp = 0.f, mp = 0.f, bl = 0.f, ml = 0.f;
@@ -188,6 +224,26 @@ void rhythmStreamGetMusicVis(float *bassPulse, float *midPulse, float *bassLevel
     *bassLevel = bl;
   if (midLevel)
     *midLevel = ml;
+}
+
+void rhythmStreamGetBassLedEnvelope(float *envelope01) {
+  float e = 0.f;
+  if (s_mode != SM_NONE && s_lastBassOnsetMs > 0) {
+    uint32_t t = (uint32_t)(s_monoFrames * 1000ull / (uint64_t)s_streamSr);
+    uint32_t since = (t >= s_lastBassOnsetMs) ? (t - s_lastBassOnsetMs) : 0;
+    float bp = s_lastBassHitStr * expf(-(float)since / 70.f);
+    const uint32_t kHoldMs = 240;
+    float hold = 0.f;
+    if (since < kHoldMs) {
+      float x = 1.f - (float)since / (float)kHoldMs;
+      hold = 0.62f + 0.38f * x * x;
+    }
+    e = fmaxf(bp, hold);
+    if (e > 1.f)
+      e = 1.f;
+  }
+  if (envelope01)
+    *envelope01 = e;
 }
 
 // --- Synthetic “melodic guide” (soft thump + short pentatonic tone, all sines) ---
@@ -334,6 +390,7 @@ static void uninstallIdfI2s() {
     i2s_stop(I2S_NUM_0);
     i2s_driver_uninstall(I2S_NUM_0);
     i2s_initialized = false;
+    delay(80);
   }
 }
 
@@ -369,6 +426,9 @@ void rhythmMp3Stop() {
   s_mode = SM_NONE;
   s_streamFadeMul = 1.f;
   s_streamSourceBpm = 0;
+  s_streamPaused = false;
+  s_pauseStartedMs = 0;
+  s_pauseAccumMs = 0;
   if (prev == SM_MP3)
     audioInit();
   beatTrackerReset();
@@ -446,8 +506,7 @@ bool rhythmMp3TryPlay(const char *path) {
   s_out->SetRate(44100);
   s_streamSr = 44100;
   s_out->SetChannels(2);
-  // Library Amplify() hard-clips int16; 0.85 + full-scale MP3 still distorts — headroom in TappedAudioOutput + lower gain.
-  s_out->SetGain(0.76f);
+  s_out->SetGain(1.0f);
   if (!s_out->begin()) {
     delete s_out;
     s_out = nullptr;
@@ -509,18 +568,36 @@ void rhythmSynthStop() {
 
 bool rhythmStreamIsActive() { return s_mode != SM_NONE; }
 
+bool rhythmStreamIsPaused() { return s_streamPaused && s_mode != SM_NONE; }
+
+void rhythmStreamSetPaused(bool paused) {
+  if (s_mode == SM_NONE)
+    return;
+  if (paused && !s_streamPaused) {
+    s_pauseStartedMs = millis();
+    s_streamPaused = true;
+  } else if (!paused && s_streamPaused) {
+    if (s_pauseStartedMs)
+      s_pauseAccumMs += millis() - s_pauseStartedMs;
+    s_pauseStartedMs = 0;
+    s_streamPaused = false;
+  }
+}
+
 bool rhythmStreamHasStrongBassOnsetYet(void) {
   return s_mode != SM_NONE && s_lastBassOnsetMs > 0;
 }
 
 void rhythmStreamLoop() {
+  if (s_streamPaused)
+    return;
   if (s_mode == SM_MP3) {
 #if RHYTHM_HAVE_MP3
     // SPI is left initialized for SD during MP3 (main skips shared-pin SPI.end); no SPI.begin here.
     // isRunning() can be false for the first few ms after begin(); tearing down here made the game
     // think the song ended instantly (results / emojis / next-track) with no audible playback.
     const uint32_t mp3AgeMs = millis() - s_playStartMs;
-    constexpr uint32_t kMp3StartGraceMs = 400;
+    constexpr uint32_t kMp3StartGraceMs = 1500;
     // More loop() calls per main iteration → keep bitstream/PPCM fed when the rest of the sketch is busy.
     constexpr int kMp3LoopsPerPump = 16;
     if (s_mp3 && s_mp3->isRunning()) {
@@ -536,13 +613,15 @@ void rhythmStreamLoop() {
         if (!s_mp3->loop())
           break;
       }
-    } else if (s_mp3)
+    } else if (s_mp3) {
+      Serial.printf("[RHYTHM] MP3 decoder stopped early (age=%lu ms)\n", (unsigned long)mp3AgeMs);
       rhythmMp3Stop();
+    }
 #endif
   } else if (s_mode == SM_SYNTH) {
     // duration 0 must not end immediately (millis() - start >= 0 is always true). Let rhythm_game
     // time out via s_songDurationMs + margin, or stop() when leaving PLAYING.
-    if (s_synDurMs > 0 && (uint32_t)(millis() - s_synStartWallMs) >= s_synDurMs) {
+    if (s_synDurMs > 0 && rhythmStreamElapsedMs() >= s_synDurMs) {
       Serial.println("[RHYTHM] Synth song finished");
       rhythmSynthStop();
       return;
@@ -555,9 +634,17 @@ void rhythmStreamLoop() {
 uint32_t rhythmStreamElapsedMs() {
   if (s_mode == SM_NONE)
     return 0;
-  if (s_mode == SM_SYNTH)
-    return millis() - s_synStartWallMs;
-  return millis() - s_playStartMs;
+  uint32_t el = (s_mode == SM_SYNTH) ? (millis() - s_synStartWallMs) : (millis() - s_playStartMs);
+  if (s_pauseAccumMs >= el)
+    return 0;
+  el -= s_pauseAccumMs;
+  if (s_streamPaused && s_pauseStartedMs) {
+    uint32_t cur = millis() - s_pauseStartedMs;
+    if (cur >= el)
+      return 0;
+    return el - cur;
+  }
+  return el;
 }
 
 #if defined(ARDUINO_ARCH_ESP32)

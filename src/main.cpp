@@ -262,6 +262,9 @@ void loop(){
     }
   }
 
+  // Pump rhythm audio before game logic so stream-active checks see a fed decoder.
+  if (rhythmGameOwnsAudioOutput())
+    rhythmGameAudioPump();
   rhythmGameLoop(now, down, edgeDownArr);
   for (int i = 0; i < 10; i++) {
     if (edgeDownArr[i])
@@ -469,7 +472,7 @@ void loop(){
       // Check if idle duration was >= 25 seconds
       if(idleStartTime > 0){
         uint32_t idleDuration = now - idleStartTime;
-        if(idleDuration >= 25000){ // 25 seconds
+        if(idleDuration >= 25000 && !rhythmGameIsActive()){ // synth idle only — not rhythm menu/results
           lcdWelcomeAnimationBeginSession();
           welcomeAnimTriggered = true;
           Serial.printf("[LCD] Triggering welcome animation (idle was %d ms)\n", idleDuration);
@@ -653,7 +656,7 @@ void loop(){
     uint8_t musicSideL[4][3], musicSideR[4][3];
     uint8_t resR = 0, resG = 0, resB = 0;
     uint8_t resFrontR = 0, resFrontG = 0, resFrontB = 0;
-    const bool beatFrontLeds = rhythmGameOwnsAudioOutput();
+    const bool beatFrontLeds = rhythmGameFrontBeatLedsActive();
     const bool resultsAmbient = rhythmGameResultsAmbientLedsActive();
     if (beatFrontLeds) {
       rhythmGameGetFrontPlayingLeds(now, beatFrL, beatFgL, beatFbL, beatFrR, beatFgR, beatFbR);
@@ -694,15 +697,13 @@ void loop(){
           }
         }
       }
-      if (beatFrontLeds && i == IDX_FRONT_L && !down[i]) {
-        r = beatFrL;
-        g = beatFgL;
-        b = beatFbL;
-      } else if (beatFrontLeds && i == IDX_FRONT_R && !down[i]) {
-        r = beatFrR;
-        g = beatFgR;
-        b = beatFbR;
-      } else if (beatFrontLeds && !down[i]) {
+      bool rhythmFrontBeat = beatFrontLeds && (i == IDX_FRONT_L || i == IDX_FRONT_R) && !down[i];
+      if (rhythmFrontBeat) {
+        setLED_RGBRhythmFront(i, i == IDX_FRONT_L ? beatFrL : beatFrR, i == IDX_FRONT_L ? beatFgL : beatFgR,
+                              i == IDX_FRONT_L ? beatFbL : beatFbR);
+        continue;
+      }
+      if (beatFrontLeds && !down[i]) {
         for (int k = 0; k < 4; k++) {
           if (i == IDX_LEFT[k]) {
             r = musicSideL[k][0];
@@ -959,92 +960,28 @@ void loop(){
       setLED_RGB(IDX_FRONT_R, r, g, b);
       
     } else if (idleMode==9){
-      // MATRIX RAIN MODE (mode 9) - falling streaks of color like Matrix code
-      static float dropPos[10] = {0}; // Position of each drop (0.0 = top, 1.0+ = off screen)
-      static float dropSpeed[10] = {0}; // Speed of each drop
-      static float dropHue[10] = {0}; // Color of each drop
-      static uint32_t lastDropUpdate = 0;
-      
-      float tsec=now/1000.0f;
-      uint32_t deltaMs = (lastDropUpdate > 0) ? (now - lastDropUpdate) : 16; // Default 16ms if first run
-      if(deltaMs > 100) deltaMs = 100; // Cap delta to prevent large jumps on mode switch
-      lastDropUpdate = now;
-      
-      // Update drops
-      for(int i=0;i<10;i++){
-        // Initialize drop if needed
-        if(dropPos[i] <= -0.5f || dropPos[i] > 1.5f){
-          if(random(0,100) < 15){ // 15% chance to spawn new drop (increased from 8%)
-            dropPos[i] = -0.3f - random(0,50)/1000.0f; // Start slightly above
-            dropSpeed[i] = 2.0f + random(0,300)/100.0f; // Much faster: 2.0-5.0 units/second (was 0.3-0.5)
-            dropHue[i] = random(100,160); // Green-cyan range
-          } else {
-            dropPos[i] = -1.0f; // Keep off screen
-          }
-        }
-        
-        // Update drop position
-        if(dropPos[i] > -1.0f){
-          dropPos[i] += dropSpeed[i] * (deltaMs / 1000.0f);
-        }
-      }
-      
-      // Render matrix rain
-      // Map LEDs to vertical positions (bottom to top)
-      int ledPositions[10]; // Maps LED index to vertical position
-      float ledY[10]; // Y position (0.0 = bottom, 1.0 = top)
-      
-      // Left column (bottom to top)
-      for(int k=0;k<4;k++){
-        ledPositions[k] = IDX_LEFT[k];
-        ledY[k] = (float)k / 3.0f; // 0.0 to 1.0
-      }
-      // Right column (bottom to top)
-      for(int k=0;k<4;k++){
-        ledPositions[k+4] = IDX_RIGHT[k];
-        ledY[k+4] = (float)k / 3.0f;
-      }
-      // Front buttons (middle height)
-      ledPositions[8] = IDX_FRONT_L;
-      ledY[8] = 0.5f;
-      ledPositions[9] = IDX_FRONT_R;
-      ledY[9] = 0.5f;
-      
-      // Render each LED
-      for(int i=0;i<10;i++){
-        float brightness = 0.0f;
-        float hue = 120.0f; // Default green
-        
-        // Check if any drop is near this LED
-        for(int d=0;d<10;d++){
-          if(dropPos[d] > -0.5f && dropPos[d] < 1.5f){
-            float ledPos = 1.0f - ledY[i]; // Invert Y (top=0, bottom=1)
-            float dist = fabsf(dropPos[d] - ledPos);
-            if(dist < 0.2f){
-              // Drop is near this LED
-              float intensity = 1.0f - (dist / 0.2f); // Fade with distance
-              if(intensity > brightness){
-                brightness = intensity;
-                hue = dropHue[d];
-              }
-            }
-            // Trail effect - dimmer behind the drop
-            if(dropPos[d] > ledPos && dist < 0.5f){
-              float trailIntensity = (0.5f - dist) / 0.5f * 0.5f; // Brighter trail (was 0.3f)
-              if(trailIntensity > brightness){
-                brightness = trailIntensity;
-                hue = dropHue[d] - 20.0f; // Slightly different hue for trail
-                if(hue < 0) hue += 360.0f;
-              }
-            }
-          }
-        }
-        
-        // Base dim glow - increased brightness
-        float baseV = 0.08f; // Increased from 0.05f
-        float totalV = baseV + brightness * 0.70f; // Increased from 0.40f (max now 0.78 instead of 0.45)
-        uint8_t r,g,b; hsv2rgb(hue, 0.9f, totalV, r, g, b);
-        setLED_RGB(ledPositions[i], r, g, b);
+      // Matrix Rain (mode 9): all 10 keys pulse matrix-green (was sparse falling drops → mostly dark).
+      const float TAU = 6.28318530718f;
+      float tsec = now / 1000.0f;
+      int ledList[10];
+      for (int k = 0; k < 4; k++)
+        ledList[k] = IDX_LEFT[k];
+      for (int k = 0; k < 4; k++)
+        ledList[k + 4] = IDX_RIGHT[k];
+      ledList[8] = IDX_FRONT_L;
+      ledList[9] = IDX_FRONT_R;
+
+      for (int i = 0; i < 10; i++) {
+        float phase = tsec * 2.4f + (float)i * 0.62f;
+        float pulse = 0.5f + 0.5f * sinf(phase);
+        float shimmer = 0.88f + 0.12f * sinf(phase * 4.7f + (float)i * 0.9f);
+        float v = (0.22f + 0.58f * pulse) * shimmer;
+        if (v > 1.f)
+          v = 1.f;
+        float hue = 112.f + 18.f * sinf(tsec * 0.9f + (float)i * 0.41f);
+        uint8_t r, g, b;
+        hsv2rgb(hue, 0.82f, v, r, g, b);
+        setLED_RGB(ledList[i], r, g, b);
       }
     } else if (idleMode==10){
       // LIGHTNING STRIKE MODE (mode 10) - realistic lightning arcs traveling down each side
