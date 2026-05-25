@@ -56,6 +56,12 @@ void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs,
                      uint32_t lastHitWallMs, uint32_t lastMissWallMs,
                      const LcdConsumedEntry *consumed, int nConsumed,
                      bool paused, int liveScorePct, float recoverGlitch = 0.f);
+// True while HIT/MISS label strobe or strike-cue X flash is active — faster LCD refresh during play.
+bool lcdRetroJudgementFlashActive(uint32_t wallMs, uint32_t lastHitWallMs, uint32_t lastMissWallMs);
+bool lcdRetroPlayingNeedsFastLcd(uint32_t wallMs, uint32_t songRelMs, uint32_t beatPeriodMs,
+                                 uint32_t lastHitWallMs, uint32_t lastMissWallMs,
+                                 const uint32_t *beats, int nBeats,
+                                 const LcdConsumedEntry *consumed, int nConsumed);
 void lcdRetroResumeCountdown(uint32_t now, uint32_t startMs, uint32_t countEachMs, const char *title, uint32_t elapsedMs,
                              uint32_t durationMs);
 void lcdRetroStillTherePrompt(uint32_t now, uint32_t promptStartMs);

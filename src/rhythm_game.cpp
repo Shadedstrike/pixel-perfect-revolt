@@ -123,9 +123,10 @@ static int              s_nConsumed = 0;
 // has been detected yet.
 static uint32_t s_displayBeatsBuf[64];
 static int      s_nDisplayBeats = 0;
+// Last sample-clock song ms while audio was running — frozen after stream stops.
+static uint32_t s_lastAudioRelMs = 0;
 // Locked kick tempo + phase for the lane grid (stable scroll, attuned to bass).
 static uint32_t s_laneScrollPeriodMs = 0;
-static uint32_t s_lanePhaseOriginMs  = 0xffffffffu;
 
 // Front-button (16/46) beat feedback while playing
 static uint32_t s_chartBeatsBuf[256];
@@ -389,7 +390,6 @@ static void rhythmBeginChartAt(int idx, uint32_t now) {
   s_nMissed       = 0;
   s_nConsumed     = 0;
   s_laneScrollPeriodMs = 0;
-  s_lanePhaseOriginMs  = 0xffffffffu;
   s_songStartMs   = now;
   s_phase = RG_PLAYING;
   s_bothFrontMenuStart = 0;
@@ -412,6 +412,7 @@ static void rhythmBeginChartAt(int idx, uint32_t now) {
   s_meltdownRecoverActive = false;
   s_meltdownRecoverStartMs = 0;
   s_meltdownRecoverDurMs = 0;
+  s_lastAudioRelMs = 0;
   bool ok = false;
   if (S.path[0])
     ok = rhythmMp3TryPlay(S.path);
@@ -460,9 +461,11 @@ static bool tapWithinFeedbackWindow(int tapRelMs, int beatMs) {
 static uint32_t rhythmSongPositionMs(uint32_t wallNow) {
   if (s_phase != RG_PLAYING)
     return 0;
-  if (rhythmStreamIsActive())
-    return rhythmStreamAudioPositionMs();
-  return (wallNow > s_songStartMs) ? (wallNow - s_songStartMs) : 0;
+  if (rhythmStreamIsActive()) {
+    s_lastAudioRelMs = rhythmStreamAudioPositionMs();
+    return s_lastAudioRelMs;
+  }
+  return s_lastAudioRelMs;
 }
 
 static void ledRingReset() {
@@ -1067,6 +1070,7 @@ static void rhythmPlayHoldAssist(uint32_t rel, uint32_t now, const bool *down);
 static void rhythmConsumeBeat(uint32_t beatMs, uint32_t now, uint32_t songRelMs, uint32_t scrollPeriodMs);
 static int rhythmBeatDisplayCol(uint32_t beatMs, uint32_t songRelMs, uint32_t scrollPeriodMs);
 static void rhythmBuildDisplayBeats(uint32_t songRel);
+static uint32_t rhythmLaneBeatEndMs(uint32_t songRel, uint32_t scrollPeriod, bool haveBass, uint32_t lastKickMs);
 static uint32_t rhythmLaneScrollPeriodMs(void);
 static void rhythmCheckBeatMisses(uint32_t rel, uint32_t now, const bool *down);
 static bool rhythmBeatNearMs(uint32_t a, uint32_t b, uint32_t fuzzMs);
@@ -1075,7 +1079,7 @@ static bool rhythmPlayAssistActive(const bool *down);
 static uint32_t rhythmReticleHitWindowMs(void);
 static uint32_t rhythmHoldAssistWindowMs(void);
 static bool rhythmBeatAlreadyScored(uint32_t beatMs, uint32_t fuzzMs);
-static void rhythmGameRegisterTapForBeat(uint32_t beatMs);
+static void rhythmGameRegisterTapForBeat(uint32_t beatMs, uint32_t songRelMs);
 static bool rhythmScoreNearestDisplayBeat(uint32_t rel, uint32_t now, bool requireUnscored);
 static void rhythmUpdateHoldMeltdown(uint32_t now, const bool *down);
 
@@ -1199,11 +1203,16 @@ void rhythmGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
       // Meltdown animation owns the LCD — keep the MP3 ring fed aggressively.
       rhythmGameAudioPumpN(6);
     } else {
-      // Rebuild beat lane every loop tick so hold-assist sees current positions (not just at LCD rate).
       uint32_t rel = rhythmSongPositionMs(now);
-      rhythmBuildDisplayBeats(rel);
-      rhythmPlayHoldAssist(rel, now, down);
-      rhythmCheckBeatMisses(rel, now, down);
+      if (rhythmStreamIsActive() && rhythmStreamLaneActive()) {
+        rhythmBuildDisplayBeats(rel);
+        rhythmPlayHoldAssist(rel, now, down);
+        rhythmCheckBeatMisses(rel, now, down);
+      } else {
+        s_nDisplayBeats = 0;
+        s_lastMissWallMs = 0;
+        s_lastHitWallMs = 0;
+      }
       // Normal play: LCD + lane math starve I2S — pump harder than AFK (350 ms LCD throttle).
       if (!s_playPaused && !s_resumeCountdown && !s_playingAfkPrompt && !s_meltdownRecoverActive)
         rhythmGameAudioPumpN(4);
@@ -1499,8 +1508,10 @@ static void rhythmGameRegisterTap(uint32_t songRelMs) {
 }
 
 // Perfect-align tap for scoring — one tap per beat, no global 42 ms choke on speedcore mash.
-static void rhythmGameRegisterTapForBeat(uint32_t beatMs) {
+static void rhythmGameRegisterTapForBeat(uint32_t beatMs, uint32_t songRelMs) {
   if (s_phase != RG_PLAYING)
+    return;
+  if (rhythmBeatOutsideScoreEdges(beatMs, songRelMs))
     return;
   uint32_t scoreFuzz = rhythmLaneScrollPeriodMs() / 8u;
   if (scoreFuzz < 24u)
@@ -1546,7 +1557,7 @@ static bool rhythmScoreNearestDisplayBeat(uint32_t rel, uint32_t now, bool requi
   if (bestIdx < 0)
     return false;
   uint32_t b = s_displayBeatsBuf[bestIdx];
-  rhythmGameRegisterTapForBeat(b);
+  rhythmGameRegisterTapForBeat(b, rel);
   rhythmConsumeBeat(b, now, rel, scrollPeriod);
   s_lastHitWallMs = now;
   s_lastMissWallMs = 0;
@@ -1576,7 +1587,7 @@ static void rhythmPlayHoldAssist(uint32_t rel, uint32_t now, const bool *down) {
       continue;
     if (rhythmBeatWasConsumed(b, fuzz))
       continue;
-    rhythmGameRegisterTapForBeat(b);
+    rhythmGameRegisterTapForBeat(b, rel);
     rhythmConsumeBeat(b, now, rel, scrollPeriod);
     anyHit = true;
   }
@@ -1716,7 +1727,7 @@ static void rhythmMaybeRegisterGoodHit(uint32_t rel, uint32_t now) {
     return;
 
   uint32_t scrollPeriod = rhythmLaneScrollPeriodMs();
-  rhythmGameRegisterTapForBeat(nearestBeat);
+  rhythmGameRegisterTapForBeat(nearestBeat, rel);
   rhythmConsumeBeat(nearestBeat, now, rel, scrollPeriod);
   s_lastHitWallMs = now;
   s_lastMissWallMs = 0;
@@ -1802,16 +1813,36 @@ static void rhythmMarkBeatMissed(uint32_t beatMs) {
 static void rhythmCheckBeatMisses(uint32_t rel, uint32_t now, const bool *down) {
   if (rhythmPlayAssistActive(down))
     return;
+  if (!rhythmStreamIsActive())
+    return;
+  if (!rhythmStreamLaneActive())
+    return;
+  if (rhythmInSongIntroGrace(rel) || rhythmInSongOutroWindow(rel))
+    return;
   if (s_nDisplayBeats <= 0)
     return;
-  uint32_t hitWindowMs = rhythmReticleHitWindowMs();
   uint32_t period = rhythmLaneScrollPeriodMs();
+  bool haveBass = rhythmStreamHasStrongBassOnsetYet();
+  uint32_t lastKick = 0;
+  if (haveBass) {
+    const uint32_t *bass = nullptr;
+    int nBass = 0;
+    rhythmStreamGetBassOnsets(&bass, &nBass);
+    if (nBass > 0)
+      lastKick = bass[nBass - 1];
+  }
+  uint32_t laneEnd = rhythmLaneBeatEndMs(rel, period, haveBass, lastKick);
+  uint32_t hitWindowMs = rhythmReticleHitWindowMs();
   uint32_t fuzz = period / 4u;
   if (fuzz < 40u)
     fuzz = 40u;
 
   for (int i = 0; i < s_nDisplayBeats; i++) {
     uint32_t b = s_displayBeatsBuf[i];
+    if (b > laneEnd)
+      continue;
+    if (rhythmBeatOutsideScoreEdges(b, rel))
+      continue;
     if (rel <= b + hitWindowMs)
       continue;
     if (rhythmBeatWasConsumed(b, fuzz))
@@ -1854,15 +1885,45 @@ static void rhythmLockLaneFromBass(const uint32_t *bass, int nBass, uint32_t las
     if (diff > 25 || diff < -25)
       s_laneScrollPeriodMs = (uint32_t)((int32_t)s_laneScrollPeriodMs + diff / 8);
   }
-  if (s_lanePhaseOriginMs == 0xffffffffu)
-    s_lanePhaseOriginMs = lastBass;
 }
 
-// Build the per-frame display beat list.
-//   Past side: real detected bass-onset times within the visible window.
-//   Future side: extrapolated bass-onset times = lastDetected + N * estimatedPeriod.
-// When the song hasn't produced any bass detection yet (early intro / quiet section),
-// fall back to the chart grid so the player still sees a steady ribbon.
+// Furthest song ms that may spawn a lane heart — tied to audio/kicks, not blind BPM extrapolation.
+static uint32_t rhythmLaneBeatEndMs(uint32_t songRel, uint32_t scrollPeriod, bool haveBass, uint32_t lastKickMs) {
+  if (scrollPeriod < 1u)
+    scrollPeriod = 1u;
+
+  if (!rhythmStreamIsActive())
+    return songRel;
+
+  if (!rhythmStreamLaneActive())
+    return songRel;
+
+  // One beat ahead of playhead for the approach ribbon; wider only before first kick.
+  uint32_t cap = songRel + scrollPeriod + 48u;
+  if (!haveBass)
+    cap = songRel + scrollPeriod * 2u + 48u;
+
+  if (haveBass && lastKickMs > 0) {
+    uint32_t kickCap = lastKickMs + scrollPeriod + scrollPeriod / 4u;
+    if (cap > kickCap)
+      cap = kickCap;
+  }
+
+  if (rhythmInSongOutroWindow(songRel)) {
+    uint32_t endMs = s_songDurationMs;
+    uint32_t el = rhythmStreamElapsedMs();
+    if (el > endMs)
+      endMs = el;
+    if (cap > endMs)
+      cap = endMs;
+  }
+
+  return cap;
+}
+
+// Build the per-frame display beat list — steady phase-locked grid for chronological lane scroll.
+// Bass detection adjusts scroll period only; marker times stay on chart-origin grid lines so
+// hearts never teleport when a kick is detected.
 static void rhythmBuildDisplayBeats(uint32_t songRel) {
   s_nDisplayBeats = 0;
 
@@ -1872,31 +1933,17 @@ static void rhythmBuildDisplayBeats(uint32_t songRel) {
     rhythmStreamGetBassOnsets(&bass, &nBass);
 
   uint32_t scrollPeriod = rhythmLaneScrollPeriodMs();
-  uint32_t futureMs = scrollPeriod + 40u;
-  uint32_t pastMs   = (scrollPeriod * 10u + 8u) / 9u + 40u;
+  static const int kLaneCpp = 9;
+  static const int kLaneHitColC = 10;
+  static const int kLaneW = 20;
+  uint32_t pastMs =
+      ((uint32_t)kLaneHitColC * scrollPeriod + (uint32_t)kLaneCpp - 1u) / (uint32_t)kLaneCpp + 40u;
+  uint32_t futureMs =
+      ((uint32_t)(kLaneW - 1 - kLaneHitColC) * scrollPeriod + (uint32_t)kLaneCpp - 1u) / (uint32_t)kLaneCpp + 40u;
   uint32_t winStart = (pastMs > songRel) ? 0u : (songRel - pastMs);
   uint32_t winEnd   = songRel + futureMs;
-  uint32_t minGap   = scrollPeriod / 4u;
-  if (minGap < 60u)
-    minGap = 60u;
 
   const int kMaxBeats = (int)(sizeof(s_displayBeatsBuf) / sizeof(s_displayBeatsBuf[0]));
-
-  auto tooClose = [&](uint32_t t) {
-    for (int i = 0; i < s_nDisplayBeats; i++) {
-      uint32_t d = (s_displayBeatsBuf[i] > t) ? (s_displayBeatsBuf[i] - t) : (t - s_displayBeatsBuf[i]);
-      if (d < minGap)
-        return true;
-    }
-    return false;
-  };
-  auto addBeat = [&](uint32_t t) {
-    if (s_nDisplayBeats >= kMaxBeats || t < winStart || t > winEnd)
-      return;
-    if (tooClose(t))
-      return;
-    s_displayBeatsBuf[s_nDisplayBeats++] = t;
-  };
 
   uint32_t lastBass = 0;
   bool haveBass = rhythmStreamHasStrongBassOnsetYet() && nBass > 0;
@@ -1907,44 +1954,26 @@ static void rhythmBuildDisplayBeats(uint32_t songRel) {
         break;
       }
     }
+    if (lastBass == 0)
+      lastBass = bass[nBass - 1];
     rhythmLockLaneFromBass(bass, nBass, lastBass);
   }
 
   scrollPeriod = rhythmLaneScrollPeriodMs();
-  uint32_t origin = (s_lanePhaseOriginMs != 0xffffffffu) ? s_lanePhaseOriginMs : s_chartOffMs;
+  uint32_t laneEnd = rhythmLaneBeatEndMs(songRel, scrollPeriod, haveBass, lastBass);
+  if (winEnd > laneEnd)
+    winEnd = laneEnd;
 
-  // Phase-locked grid: stable timestamps frame-to-frame so hearts scroll smoothly
-  // right (col 19) → left (col 0) through the reticle at col 10.
-  if (scrollPeriod > 0) {
+  uint32_t origin = s_chartOffMs;
+
+  bool allowGrid = !haveBass || songRel <= lastBass + scrollPeriod / 3u;
+  if (allowGrid && scrollPeriod > 0) {
     uint32_t t = origin;
     while (t + scrollPeriod <= winStart)
       t += scrollPeriod;
-    while (t <= winEnd) {
-      addBeat(t);
+    while (t <= winEnd && s_nDisplayBeats < kMaxBeats) {
+      s_displayBeatsBuf[s_nDisplayBeats++] = t;
       t += scrollPeriod;
-    }
-  }
-
-  // Snap grid slots to real detected kicks (bass attunement).
-  if (haveBass) {
-    for (int i = 0; i < nBass; i++) {
-      if (bass[i] < winStart)
-        continue;
-      if (bass[i] > winEnd)
-        break;
-      int best = -1;
-      uint32_t bestD = UINT32_MAX;
-      for (int j = 0; j < s_nDisplayBeats; j++) {
-        uint32_t d = (s_displayBeatsBuf[j] > bass[i]) ? (s_displayBeatsBuf[j] - bass[i]) : (bass[i] - s_displayBeatsBuf[j]);
-        if (d < bestD) {
-          bestD = d;
-          best = j;
-        }
-      }
-      if (best >= 0 && bestD <= scrollPeriod / 3u)
-        s_displayBeatsBuf[best] = bass[i];
-      else
-        addBeat(bass[i]);
     }
   }
 }
@@ -1953,6 +1982,11 @@ bool rhythmGameDrawLcd(uint32_t now) {
   static uint32_t s_lastLcd = 0;
   if (s_phase == RG_NORMAL)
     return false;
+
+  if (s_phase == RG_PLAYING && !s_playingAfkPrompt && !s_resumeCountdown && !s_holdMeltdownActive && !s_playPaused) {
+    if (rhythmStreamIsActive() && rhythmStreamLaneActive())
+      rhythmBuildDisplayBeats(rhythmSongPositionMs(now));
+  }
 
   uint32_t lcdThrottleMs = 220;
   if (s_phase == RG_MENU)
@@ -1967,6 +2001,11 @@ bool rhythmGameDrawLcd(uint32_t now) {
     lcdThrottleMs = 130;
   if (s_phase == RG_PLAYING && !s_playingAfkPrompt && !s_resumeCountdown && !s_holdMeltdownActive)
     lcdThrottleMs = 80;
+  if (s_phase == RG_PLAYING && lcdRetroPlayingNeedsFastLcd(now, rhythmSongPositionMs(now),
+                                                          rhythmLaneScrollPeriodMs(), s_lastHitWallMs,
+                                                          s_lastMissWallMs, s_displayBeatsBuf, s_nDisplayBeats,
+                                                          s_consumed, s_nConsumed))
+    lcdThrottleMs = 35;
   if (s_phase == RG_PLAYING && s_playingAfkPrompt)
     lcdThrottleMs = 350;
   if (s_phase == RG_FLASH)

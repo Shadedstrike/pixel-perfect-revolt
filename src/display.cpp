@@ -1908,34 +1908,32 @@ void lcdRetroMenu(int selectedIdx, const RhythmSongRow *rows, int numRows, uint3
   }
 }
 
-// Beat lane (20 cols): hearts travel right → left through the entire row, passing
-// THROUGH the bracket interior (cols 9, 10, 11).  Only the two rails at cols 8 and 12
-// are reserved for the bracket frame; every other column is part of the heart runway.
+// Beat lane (20 cols, rows 2–3): Guitar-Hero-style conveyor; time flows right → left.
 //
-// Each entry in the supplied beat array generates exactly one heart.  At display time
-// we walk the array and place each beat at:
+// Row 2 — NOTE LANE: kick hearts / hit bursts, full width (col 10 = strike when onset hits).
+// Row 3 — HIGHWAY: sub-beat tick texture on every column + fixed [> + <] reticle cols 8–12.
+//
 //   col = kHitColC + (beatMs - songRelMs) * kCpp / scrollPeriodMs
-// The caller supplies a precomputed beat list (chart-time grid) — this is the only
-// source of "future" hearts since real-time bass detection only sees the past.  The
-// scroll period is chart-derived (constant during a song) so motion is smooth.
+// Markers come from a steady phase-locked grid; bass adjusts scroll period only.
 static const int  kHitColL      = 8;   // left rail
 static const int  kHitColC      = 10;  // strike point — where a heart sits when its onset hits
 static const int  kHitColR      = 12;  // right rail
-static const char kBeatChar     = '\x01'; // CGRAM slot 1 = heart (defined at play-start)
+static const char kBeatChar     = '\x04'; // CGRAM slot 4 — lane heart (slots 0–3 reserved for meltdown)
+static const char kExplodeChar  = '\x05'; // CGRAM slot 5 — hit burst
 
 // 5×8 CGRAM glyphs (bit4 = left pixel, bit0 = right). Shared by play lane + meltdown.
-// Heart: filled ▼ with a single pixel cut from the top centre — all 8 rows used for max ink.
+// Heart: same ink density as burst — full block with one centre pixel cut on the top row (▼).
 static const uint8_t kLcdHeartGlyph[8] = {
-    0x1B, // ██░██  flat top, centre pixel out
+    0x1B, // ██░██  only row that differs from burst
     0x1F, // █████
     0x1F, // █████
     0x1F, // █████
     0x1F, // █████
     0x1F, // █████
-    0x0E, // ░███░
-    0x04, // ░░█░░  tip fills bottom row
+    0x1F, // █████
+    0x1F, // █████  bottom row filled
 };
-// Hit burst: solid 5×7 block flash — unmistakable, full contrast vs the ▼ heart.
+// Hit burst: solid block — same density as heart but no top-centre cut.
 static const uint8_t kLcdBurstGlyph[8] = {
     0x1F, // █████
     0x1F, // █████
@@ -1944,7 +1942,7 @@ static const uint8_t kLcdBurstGlyph[8] = {
     0x1F, // █████
     0x1F, // █████
     0x1F, // █████
-    0x00,
+    0x1F, // █████  match heart bottom row for equal brightness
 };
 
 static void lcdWriteCgramGlyph(uint8_t slot, const uint8_t *src) {
@@ -1953,45 +1951,173 @@ static void lcdWriteCgramGlyph(uint8_t slot, const uint8_t *src) {
   lcd.createChar(slot, buf);
 }
 
-// Heart shape in CGRAM slot 1 — written when entering RG_PLAYING.
-// Explode/burst shape in CGRAM slot 2 — shown when a heart is hit inside the bracket.
-// Each beat is placed at: col = kHitColC + (beatMs - songRelMs) * kCpp / scrollPeriodMs
-//   beat in the future → col > 10 (right side) → scrolls left as songRelMs advances
-//   beat at strike time → col == 10 (reticle centre)
-static void lcdRetroDefineBeatChar(void) {
-  lcdWriteCgramGlyph(1, kLcdHeartGlyph);
-  lcdWriteCgramGlyph(2, kLcdBurstGlyph);
+// Play lane CGRAM (slots 4–5). Meltdown uses 0–3 so play glyphs stay out of its way.
+static void lcdRetroDefinePlayLaneGlyphs(void) {
+  lcdWriteCgramGlyph(4, kLcdHeartGlyph);
+  lcdWriteCgramGlyph(5, kLcdBurstGlyph);
 }
-static const char kExplodeChar  = '\x02'; // CGRAM slot 2 = burst
+
+// Heart / burst shapes for play lane — also called from invalidate after meltdown.
+static void lcdRetroDefineBeatChar(void) {
+  lcdRetroDefinePlayLaneGlyphs();
+}
 // Hit lifecycle on the lane: burst at frozen col, then blink-fade, then gone.
 static const uint32_t kHitBurstMs = 250u;
 static const uint32_t kHitFadeMs  = 500u;  // blink-fade after burst
 static const uint32_t kHitGoneMs  = kHitBurstMs + kHitFadeMs;
-// HIT label on the time row uses the burst window only.
-static const uint32_t kHitFlashMs = kHitBurstMs;
+// HIT / MISS label: fast strobe on row 1. Reticle X = strike cue (hit now), not miss.
+static const uint32_t kJudgeStrobeMs = 35u;
+static const uint32_t kHitJudgeMs    = 140u;  // two pulses
+static const uint32_t kMissJudgeMs   = 210u;  // three pulses
+static const uint32_t kStrikeStrobeMs = 35u;
 
-static void lcdRetroFillBeatStars(char *row, uint32_t scrollPeriodMs, uint32_t songRelMs,
-                                  const uint32_t *beats, int nBeats,
-                                  uint32_t wallMs,
-                                  const LcdConsumedEntry *consumed, int nConsumed) {
+enum LcdJudgeFlash { kJudgeNone = 0, kJudgeHit = 1, kJudgeMiss = 2 };
+
+// Matches rhythmReticleHitWindowMs() in rhythm_game.cpp.
+static uint32_t lcdRetroReticleWindowMs(uint32_t scrollPeriodMs) {
+  uint32_t period = scrollPeriodMs > 0u ? scrollPeriodMs : 1u;
+  uint32_t w      = (4u * period) / 9u;
+  if (w < 80u)
+    w = 80u;
+  if (w > 420u)
+    w = 420u;
+  return w;
+}
+
+static bool lcdRetroBeatWasConsumed(uint32_t beatMs, uint32_t fuzzMs, const LcdConsumedEntry *consumed, int nConsumed) {
+  for (int i = 0; i < nConsumed; i++) {
+    uint32_t d = (consumed[i].beatMs > beatMs) ? (consumed[i].beatMs - beatMs) : (beatMs - consumed[i].beatMs);
+    if (d <= fuzzMs)
+      return true;
+  }
+  return false;
+}
+
+// True while an unconsumed beat is in the reticle window — time to strike.
+static bool lcdRetroStrikeCueActive(uint32_t songRelMs, uint32_t scrollPeriodMs, const uint32_t *beats, int nBeats,
+                                    const LcdConsumedEntry *consumed, int nConsumed) {
+  if (!beats || nBeats <= 0)
+    return false;
+  uint32_t hitWindow = lcdRetroReticleWindowMs(scrollPeriodMs);
+  uint32_t fuzz      = scrollPeriodMs / 4u;
+  if (fuzz < 40u)
+    fuzz = 40u;
+
+  for (int i = 0; i < nBeats; i++) {
+    uint32_t b = beats[i];
+    if (b + hitWindow < songRelMs)
+      continue;
+    if (b > songRelMs + hitWindow)
+      continue;
+    if (lcdRetroBeatWasConsumed(b, fuzz, consumed, nConsumed))
+      continue;
+    return true;
+  }
+  return false;
+}
+
+static bool lcdRetroStrikeCuePulseOn(uint32_t wallMs) { return ((wallMs / kStrikeStrobeMs) % 2u) == 0u; }
+
+static LcdJudgeFlash lcdRetroJudgeFlashKind(uint32_t wallMs, uint32_t lastHitWallMs, uint32_t lastMissWallMs,
+                                            uint32_t *ageOut) {
+  if (lastHitWallMs != 0) {
+    uint32_t age = wallMs - lastHitWallMs;
+    if (age < kHitJudgeMs) {
+      if (ageOut)
+        *ageOut = age;
+      return kJudgeHit;
+    }
+  }
+  if (lastMissWallMs != 0) {
+    uint32_t age = wallMs - lastMissWallMs;
+    if (age < kMissJudgeMs) {
+      if (ageOut)
+        *ageOut = age;
+      return kJudgeMiss;
+    }
+  }
+  return kJudgeNone;
+}
+
+bool lcdRetroJudgementFlashActive(uint32_t wallMs, uint32_t lastHitWallMs, uint32_t lastMissWallMs) {
+  return lcdRetroJudgeFlashKind(wallMs, lastHitWallMs, lastMissWallMs, nullptr) != kJudgeNone;
+}
+
+bool lcdRetroPlayingNeedsFastLcd(uint32_t wallMs, uint32_t songRelMs, uint32_t beatPeriodMs, uint32_t lastHitWallMs,
+                                 uint32_t lastMissWallMs, const uint32_t *beats, int nBeats,
+                                 const LcdConsumedEntry *consumed, int nConsumed) {
+  if (lcdRetroJudgementFlashActive(wallMs, lastHitWallMs, lastMissWallMs))
+    return true;
+  return lcdRetroStrikeCueActive(songRelMs, beatPeriodMs, beats, nBeats, consumed, nConsumed);
+}
+
+// HIT: two blinks (phase 0 + 2).  MISS: three tight blinks (phases 0–2).
+static bool lcdRetroJudgePulseOn(LcdJudgeFlash kind, uint32_t ageMs) {
+  uint32_t phase = ageMs / kJudgeStrobeMs;
+  if (kind == kJudgeHit)
+    return phase == 0u || phase == 2u;
+  if (kind == kJudgeMiss)
+    return phase <= 2u;
+  return false;
+}
+
+static void lcdRetroOverlayHitJudge(char *row2, char *row3, bool pulseOn) {
+  if (!pulseOn)
+    return;
+  row2[kHitColC] = kExplodeChar;
+  row3[kHitColL] = kExplodeChar;
+  row3[kHitColR] = kExplodeChar;
+}
+
+// Flash X on the reticle while a beat is in the strike window (hit now — not miss feedback).
+static void lcdRetroOverlayStrikeCue(char *row2, char *row3, bool pulseOn) {
+  if (!pulseOn)
+    return;
+  row2[kHitColC] = 'X';
+  row3[kHitColL] = 'X';
+  row3[kHitColR] = 'X';
+  row3[kHitColC] = 'X';
+}
+
+static void lcdRetroFillNoteLane(char *row, uint32_t scrollPeriodMs, uint32_t songRelMs,
+                                 const uint32_t *beats, int nBeats,
+                                 uint32_t wallMs,
+                                 const LcdConsumedEntry *consumed, int nConsumed) {
   const int W    = 20;
   const int kCpp = 9;
 
-  for (int i = 0; i < W; i++) row[i] = ' ';
+  for (int i = 0; i < W; i++)
+    row[i] = ' ';
   row[W] = '\0';
 
-  if (!beats || nBeats <= 0) return;
+  if (!beats || nBeats <= 0)
+    return;
   uint32_t period = (scrollPeriodMs > 0u) ? scrollPeriodMs : 1u;
   uint32_t matchFuzz = period / 4u;
   if (matchFuzz < 40u)
     matchFuzz = 40u;
 
-  for (int i = 0; i < nBeats; i++) {
-    // Fuzzy match — grid snap can shift beatMs slightly between frames.
+  uint32_t sorted[64];
+  int n = nBeats;
+  if (n > (int)(sizeof(sorted) / sizeof(sorted[0])))
+    n = (int)(sizeof(sorted) / sizeof(sorted[0]));
+  memcpy(sorted, beats, (size_t)n * sizeof(sorted[0]));
+  for (int i = 0; i < n - 1; i++) {
+    for (int j = i + 1; j < n; j++) {
+      if (sorted[j] < sorted[i]) {
+        uint32_t t = sorted[i];
+        sorted[i]    = sorted[j];
+        sorted[j]    = t;
+      }
+    }
+  }
+
+  for (int i = 0; i < n; i++) {
+    uint32_t beatMs = sorted[i];
     uint32_t hitWall = 0;
     int8_t   hitCol  = -1;
     for (int j = 0; j < nConsumed; j++) {
-      uint32_t d = (consumed[j].beatMs > beats[i]) ? (consumed[j].beatMs - beats[i]) : (beats[i] - consumed[j].beatMs);
+      uint32_t d = (consumed[j].beatMs > beatMs) ? (consumed[j].beatMs - beatMs) : (beatMs - consumed[j].beatMs);
       if (d <= matchFuzz) {
         hitWall = consumed[j].hitWallMs;
         hitCol  = consumed[j].hitCol;
@@ -2002,44 +2128,77 @@ static void lcdRetroFillBeatStars(char *row, uint32_t scrollPeriodMs, uint32_t s
     int col;
     if (hitWall != 0) {
       uint32_t age = wallMs - hitWall;
-      // Freeze at the column where the heart was when hit (no leftward drift).
       col = (int)hitCol;
       if (col < 0 || col >= W)
         continue;
-      if (col == kHitColL || col == kHitColR)
-        continue;
-      if (age < kHitBurstMs) {
+      if (age < kHitGoneMs)
         row[col] = kExplodeChar;
-      } else if (age < kHitGoneMs) {
-        // Hold solid burst through fade window — no blink (was reading dim/odd on LCD).
-        row[col] = kExplodeChar;
-      }
-      // After fade: stay blank — never redraw the scrolling heart.
       continue;
     }
 
-    int64_t dt   = (int64_t)beats[i] - (int64_t)songRelMs;
+    int64_t dt   = (int64_t)beatMs - (int64_t)songRelMs;
     int64_t dCol = (dt * (int64_t)kCpp) / (int64_t)period;
     col          = kHitColC + (int)dCol;
 
-    if (col < 0 || col >= W) continue;
-    if (col == kHitColL || col == kHitColR) continue;
+    if (col < 0 || col >= W)
+      continue;
 
-    if (row[col] == ' ') row[col] = kBeatChar;
+    // Far approach: dim dot; near reticle: full heart (reads as chronological stream).
+    if (col > kHitColR + 3)
+      row[col] = ':';
+    else
+      row[col] = kBeatChar;
   }
 }
 
-// Bracket frame for row 2: vertical rails at cols 8 and 12.  No centre indicator —
-// the heart passes through cols 9/10/11 on its way across the row.
-static void lcdRetroOverlayHitRails(char *row) {
-  row[kHitColL] = '|';
-  row[kHitColR] = '|';
-}
+// Row 3: scrolling sub-beat ticks + fixed strike reticle (cols 8–12).
+static void lcdRetroFillHighway(char *row, uint32_t scrollPeriodMs, uint32_t songRelMs) {
+  const int W    = 20;
+  const int kCpp = 9;
+  uint32_t period = (scrollPeriodMs > 0u) ? scrollPeriodMs : 1u;
+  uint32_t subMs  = period / 4u;
+  if (subMs < 48u)
+    subMs = 48u;
 
-// Bracket frame for row 3: chevron rails at cols 8 and 12.  Same behaviour as above.
-static void lcdRetroOverlayHitWindow(char *row) {
-  row[kHitColL] = '>';
-  row[kHitColR] = '<';
+  for (int c = 0; c < W; c++) {
+    if (c == kHitColL) {
+      row[c] = '>';
+      continue;
+    }
+    if (c == kHitColR) {
+      row[c] = '<';
+      continue;
+    }
+    if (c == kHitColC) {
+      row[c] = '+';
+      continue;
+    }
+    if (c > kHitColL && c < kHitColR) {
+      row[c] = '-';
+      continue;
+    }
+
+    int64_t dtMs   = (int64_t)(c - kHitColC) * (int64_t)period / kCpp;
+    int64_t tAtCol = (int64_t)songRelMs + dtMs;
+    uint32_t t       = (tAtCol > 0) ? (uint32_t)tAtCol : 0u;
+    uint32_t subPhase = (t / subMs) % 4u;
+
+    if (c < kHitColL) {
+      // Past: sparse fading ticks (already passed the reticle).
+      row[c] = (subPhase == 0u) ? ':' : ' ';
+    } else {
+      // Future approach: dense conveyor — every column carries motion.
+      if (subPhase == 0u)
+        row[c] = '|';
+      else if (subPhase == 1u)
+        row[c] = '-';
+      else if (subPhase == 2u)
+        row[c] = '.';
+      else
+        row[c] = ' ';
+    }
+  }
+  row[W] = '\0';
 }
 
 static void lcdRetroPad20(char *out, const char *src) {
@@ -2049,7 +2208,7 @@ static void lcdRetroPad20(char *out, const char *src) {
 }
 
 // snprintf time line is often <20 chars; pad so lcd.print clears cols 14–19 (e.g. get-ready "111111" leftovers).
-// HIT / MISS label flashes for kHitFlashMs; score % stays in its fixed slot.
+// HIT / MISS: super-fast strobe (double vs triple pulse) on the label slot.
 static void lcdRetroFormatTimeLine(char *row21, uint32_t elapsedMs, uint32_t durationMs, bool paused, int livePct,
                                     uint32_t wallMs, uint32_t lastHitWallMs, uint32_t lastMissWallMs) {
   uint32_t e = elapsedMs / 1000;
@@ -2060,9 +2219,11 @@ static void lcdRetroFormatTimeLine(char *row21, uint32_t elapsedMs, uint32_t dur
     snprintf(row21, 21, "%u:%02u / %u:%02u ||", (unsigned)(e / 60), (unsigned)(e % 60), (unsigned)(d / 60),
              (unsigned)(d % 60));
   } else if (livePct >= 0) {
-    bool flashHit  = (lastHitWallMs != 0) && ((wallMs - lastHitWallMs) < kHitFlashMs);
-    bool flashMiss = !flashHit && (lastMissWallMs != 0) && ((wallMs - lastMissWallMs) < kHitFlashMs);
-    const char *label = flashHit ? "HIT" : (flashMiss ? "MISS" : "   ");
+    uint32_t judgeAge = 0;
+    LcdJudgeFlash kind = lcdRetroJudgeFlashKind(wallMs, lastHitWallMs, lastMissWallMs, &judgeAge);
+    const char *label = "   ";
+    if (kind != kJudgeNone && lcdRetroJudgePulseOn(kind, judgeAge))
+      label = (kind == kJudgeHit) ? "HIT" : "MISS";
     snprintf(row21, 21, "%u:%02u/%u:%02u %s %3d%%", (unsigned)(e / 60), (unsigned)(e % 60), (unsigned)(d / 60),
              (unsigned)(d % 60), label, livePct);
   } else {
@@ -2380,10 +2541,14 @@ void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs,
     lcdRetroPad20(row2, "== PAUSED 16+46 3s =");
     lcdRetroPad20(row3, "  HOLD 3s TO RESUME  ");
   } else {
-    lcdRetroFillBeatStars(row2, beatPeriodMs, songRelMs, beats, nBeats, wallMs, consumed, nConsumed);
-    lcdRetroOverlayHitRails(row2);
-    lcdRetroFillBeatStars(row3, beatPeriodMs, songRelMs, beats, nBeats, wallMs, consumed, nConsumed);
-    lcdRetroOverlayHitWindow(row3);
+    lcdRetroFillNoteLane(row2, beatPeriodMs, songRelMs, beats, nBeats, wallMs, consumed, nConsumed);
+    lcdRetroFillHighway(row3, beatPeriodMs, songRelMs);
+    uint32_t judgeAge = 0;
+    LcdJudgeFlash judgeKind = lcdRetroJudgeFlashKind(wallMs, lastHitWallMs, lastMissWallMs, &judgeAge);
+    if (judgeKind == kJudgeHit)
+      lcdRetroOverlayHitJudge(row2, row3, lcdRetroJudgePulseOn(kJudgeHit, judgeAge));
+    else if (lcdRetroStrikeCueActive(songRelMs, beatPeriodMs, beats, nBeats, consumed, nConsumed))
+      lcdRetroOverlayStrikeCue(row2, row3, lcdRetroStrikeCuePulseOn(wallMs));
   }
 
   if (recoverGlitch > 0.005f) {
@@ -2411,10 +2576,8 @@ void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs,
     }
     last[20] = '\0';
   };
-  // Beat rows: full-line write with lcd.write so CGRAM slots 1/2 render reliably.
+  // Beat rows: always push the full line so CGRAM hearts never stick dim from skipped deltas.
   auto printBeatRow = [](int rowIdx, const char *fresh, char *last) {
-    if (memcmp(fresh, last, 20) == 0)
-      return;
     lcd.setCursor(0, rowIdx);
     for (int i = 0; i < 20; i++)
       lcd.write((uint8_t)fresh[i]);
@@ -2422,6 +2585,8 @@ void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs,
   };
   deltaWriteRow(0, row0, s_playLastRow0);
   deltaWriteRow(1, row1, s_playLastRow1);
+  if (!paused)
+    lcdRetroDefinePlayLaneGlyphs();
   printBeatRow(2, row2, s_playLastRow2);
   printBeatRow(3, row3, s_playLastRow3);
 }

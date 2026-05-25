@@ -39,6 +39,10 @@ void rhythmStreamSetPaused(bool paused);
 void rhythmStreamLoop();
 // 1.f = full output; multiply MP3/synth PCM (e.g. AFK exit fade). Reset to 1 on stop / new playback.
 void rhythmStreamSetFadeMul(float linear01);
+float rhythmStreamGetFadeMul(void);
+// Combined fader × output-level gate (0..1). Lane/hearts off below ~0.30.
+float rhythmStreamAudibleGate(void);
+bool rhythmStreamLaneActive(void);
 
 // Elapsed play position in ms (for UI). Stops updating when not active.
 uint32_t rhythmStreamElapsedMs();

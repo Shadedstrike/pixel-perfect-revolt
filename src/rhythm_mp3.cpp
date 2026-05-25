@@ -53,6 +53,9 @@ static float s_visBassMagSm = 0.f;
 static float s_visMidMagSm = 0.f;
 static float s_lastBassHitStr = 1.f;
 static float s_lastMidHitStr = 0.9f;
+static float s_outLevelSm = 0.f;
+static float s_audibleGate01 = 1.f;
+static float s_streamFadeMul = 1.f;
 
 static void beatTrackerReset() {
   s_bassOnsetCount = 0;
@@ -67,6 +70,8 @@ static void beatTrackerReset() {
   s_visBassMagSm = s_visMidMagSm = 0.f;
   s_lastBassHitStr = 1.f;
   s_lastMidHitStr = 0.9f;
+  s_outLevelSm = 0.f;
+  s_audibleGate01 = 1.f;
 }
 
 static void beatTrackerFeedFrame(int16_t mono) {
@@ -88,6 +93,14 @@ static void beatTrackerFeedFrame(int16_t mono) {
   // Raised to 2.2σ (was 1.65) — stricter threshold, only strong kicks pass.
   float thr = s_fluxEma + 2.2f * sqrtf(fmaxf(s_fluxVar, 1e-12f));
 
+  float rmsB = sqrtf(fmaxf(eb, 1e-12f));
+  s_outLevelSm = s_outLevelSm * 0.985f + rmsB * 0.015f;
+  float level01 = fminf(1.f, s_outLevelSm / 0.048f);
+  s_audibleGate01 = s_streamFadeMul * level01;
+  // During fade-out / quiet tails: raise onset threshold sharply so weak tails don't spawn beats.
+  float detectScale = 1.f + (1.f - s_audibleGate01) * 5.5f;
+  thr *= detectScale;
+
   uint32_t tms = (uint32_t)(s_monoFrames * 1000ull / (uint64_t)s_streamSr);
   s_monoFrames++;
 
@@ -100,7 +113,7 @@ static void beatTrackerFeedFrame(int16_t mono) {
 
   // 220 ms refractory = max ~4.5 kicks/sec; was 105 ms which allowed 9/sec and
   // caused screen-flooding on busy mid-range content.
-  if (fluxB > thr && (tms - s_lastBassOnsetMs) > 220) {
+  if (s_audibleGate01 >= 0.32f && fluxB > thr && (tms - s_lastBassOnsetMs) > 220) {
     float ex = (fluxB - thr) / fmaxf(thr * 0.38f, 1e-5f);
     if (ex > 1.35f)
       ex = 1.35f;
@@ -118,7 +131,8 @@ static void beatTrackerFeedFrame(int16_t mono) {
     }
   }
   float mthr = s_fluxEma * 0.92f + 2.1f * sqrtf(fmaxf(s_fluxVar, 1e-12f));
-  if (fluxM > mthr && (tms - s_lastMidOnsetMs) > 110) {
+  mthr *= detectScale;
+  if (s_audibleGate01 >= 0.32f && fluxM > mthr && (tms - s_lastMidOnsetMs) > 110) {
     float mx = (fluxM - mthr) / fmaxf(mthr * 0.48f, 1e-5f);
     if (mx > 1.4f)
       mx = 1.4f;
@@ -149,8 +163,6 @@ void rhythmStreamGetBonusOnsets(const uint32_t **outPtr, int *outCount) {
   if (outCount)
     *outCount = s_midBonusCount;
 }
-
-static float s_streamFadeMul = 1.f;
 
 void rhythmStreamSetFadeMul(float linear01) {
   if (linear01 < 0.f)
@@ -208,6 +220,12 @@ static uint16_t s_streamSourceBpm = 0;
 static bool s_streamPaused = false;
 static uint32_t s_pauseStartedMs = 0;
 static uint32_t s_pauseAccumMs = 0;
+
+float rhythmStreamGetFadeMul(void) { return s_streamFadeMul; }
+
+float rhythmStreamAudibleGate(void) { return s_audibleGate01; }
+
+bool rhythmStreamLaneActive(void) { return s_mode != SM_NONE && s_audibleGate01 >= 0.30f; }
 
 void rhythmStreamGetMusicVis(float *bassPulse, float *midPulse, float *bassLevel, float *midLevel) {
   float bp = 0.f, mp = 0.f, bl = 0.f, ml = 0.f;
