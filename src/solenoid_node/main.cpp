@@ -1,247 +1,142 @@
-// Solenoid actuator node: MQTT -> Adafruit "I2C to 8 Channel Solenoid Driver" (MCP23017 + MOSFETs).
-// STEMMA QT / Qwiic: connect SDA/SCL + GND; power Vcc from 3.3 V (ESP32) or 5 V per Adafruit.
-// Solenoid rail: center V+ terminal = 3–24 V per coil rating; common GND with ESP32.
+// Actuator node: ESP-NOW -> Telesyn motor drivers + MCP23017 solenoids + DMX512.
 //
-// Wiring / topology:
-//   - Flash: pio run -e solenoid-node -t upload
-//   - I2C default address 0x20 (change MCP23017_ADDR if A0–A2 jumpers set).
-//   - MQTT: mqtt_config.h + topic pyrrisma/solenoid/cmd (see mqtt_protocol.h).
-//
-// Outputs 0–7 = MCP23017 port A (board labels 0–7 / A0–A7). HIGH = solenoid ON (Adafruit example).
-// Color map (must match mqtt_link.cpp gpioToColorName on controller):
-//   red=0, green=1, blue=2, yellow=3
+// Flash: pio run -e solenoid-node -t upload
+// Monitor: pio device monitor -e solenoid-node
 
 #include <Arduino.h>
-#include <Wire.h>
 #include <WiFi.h>
-#include <cctype>
-#include <cstring>
-#include <strings.h>
-#include <PubSubClient.h>
-#include <Adafruit_MCP23X17.h>
 
-#include "mqtt_config.h"
-#include "mqtt_protocol.h"
-#include "lilygo_eth_w5500.h"
+#include "actuator_config.h"
+#include "actuator_protocol.h"
+#include "motor_config.h"
+#include "dmx_config.h"
+#include "dmx_output.h"
+#include "espnow_actuator.h"
+#include "motor_output.h"
+#include "serial_status.h"
+#include "solenoid_output.h"
 
-#ifndef I2C_SDA
-#define I2C_SDA 17
-#endif
-#ifndef I2C_SCL
-#define I2C_SCL 18
-#endif
+static uint32_t s_rxCount = 0;
+static uint32_t s_lastRxMs = 0;
+static ActuatorColor s_lastColor = ACTUATOR_COLOR_COUNT;
+static bool s_lastOn = false;
 
-#ifndef MCP23017_ADDR
-#define MCP23017_ADDR 0x20
-#endif
-
-#ifndef SOLENOID_DEBUG_HB_MS
-#define SOLENOID_DEBUG_HB_MS 5000
-#endif
-
-static bool s_mcpOk = false;
-
-static Adafruit_MCP23X17 mcp;
-static WiFiClient s_wifi;
-static PubSubClient s_mqtt(s_wifi);
-
-static bool i2cProbe(uint8_t addr) {
-  Wire.beginTransmission(addr);
-  return Wire.endTransmission() == 0;
+static void waitForUsbSerial() {
+  Serial.begin(115200);
+  const uint32_t t0 = millis();
+  while (!Serial && (millis() - t0) < 4000)
+    delay(10);
 }
 
-// Serial status every SOLENOID_DEBUG_HB_MS (WiFi/ETH, I2C ACK at MCP23017_ADDR, MQTT).
+static void applyActuatorColor(ActuatorColor color, bool on) {
+  Serial.printf("[ACT] %s %s", serialStatusColorName(color), on ? "ON" : "OFF");
+
+  if (motorOutputHasMotor(color)) {
+    motorOutputSetColor(color, on);
+    Serial.printf(" | mot=%s", on ? "RUN" : "STOP");
+  } else {
+    Serial.print(" | mot=—");
+  }
+
+  solenoidOutputSetChannel((uint8_t)color, on);
+
+  int8_t parOffset = -1;
+  bool bubble = false;
+  switch (color) {
+    case ACTUATOR_COLOR_RED:
+      parOffset = DMX_PAR_CH_RED;
+      break;
+    case ACTUATOR_COLOR_GREEN:
+      parOffset = DMX_PAR_CH_GREEN;
+      break;
+    case ACTUATOR_COLOR_BLUE:
+      parOffset = DMX_PAR_CH_BLUE;
+      break;
+    case ACTUATOR_COLOR_YELLOW:
+      parOffset = DMX_PAR_CH_AMBER;
+      bubble = true;
+      break;
+    default:
+      Serial.println(" | ignored");
+      return;
+  }
+
+  if (dmxOutputReady() && parOffset >= 0) {
+    const uint16_t slot = (uint16_t)(DMX_PAR_START_ADDR + (uint8_t)parOffset);
+    dmxOutputSetSlot(slot, on ? (uint8_t)DMX_LEVEL_FULL : 0);
+    Serial.printf(" | dmx=%u", (unsigned)slot);
+  } else {
+    Serial.print(" | dmx=SKIP");
+  }
+
+  if (bubble) {
+    dmxOutputSetBubble(on);
+    Serial.print(" | bubble");
+  }
+
+  Serial.println();
+}
+
+static void onEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
+  (void)mac;
+  ++s_rxCount;
+  s_lastRxMs = millis();
+  s_lastColor = (ActuatorColor)pkt->color;
+  s_lastOn = pkt->on != 0;
+  applyActuatorColor((ActuatorColor)pkt->color, pkt->on != 0);
+}
+
 static void debugHeartbeat(uint32_t now) {
   static uint32_t lastHb = 0;
-  if (now - lastHb < (uint32_t)SOLENOID_DEBUG_HB_MS)
+  if (now - lastHb < (uint32_t)ACTUATOR_HB_MS)
     return;
   lastHb = now;
 
-  const bool i2cAck = i2cProbe(MCP23017_ADDR);
-  const char *i2cStr = i2cAck ? "OK" : "NO_ACK";
-  const char *mqttStr = s_mqtt.connected() ? "OK" : "DOWN";
+  const uint32_t sinceRx = s_lastRxMs ? (now - s_lastRxMs) : 0;
+  const char *lastColor =
+      s_lastColor < ACTUATOR_COLOR_COUNT ? serialStatusColorName(s_lastColor) : "none";
 
-#if LILYGO_ETH_BOARD != 0
-  const bool link = lilygoEthW5500Connected();
-  Serial.printf("[HB] ETH=%s ip=%s  I2C_0x%02X=%s(init=%s)  MQTT=%s  SDA=%d SCL=%d\n", link ? "OK" : "DOWN",
-                link ? lilygoEthLocalIP().toString().c_str() : "—", MCP23017_ADDR, i2cStr, s_mcpOk ? "OK" : "FAIL",
-                mqttStr, (int)I2C_SDA, (int)I2C_SCL);
-#else
-  const bool wifiOk = (WiFi.status() == WL_CONNECTED);
-  Serial.printf("[HB] WiFi=%s(%d) ip=%s  I2C_0x%02X=%s(init=%s)  MQTT=%s  SDA=%d SCL=%d\n",
-                wifiOk ? "OK" : "DOWN", (int)WiFi.status(), wifiOk ? WiFi.localIP().toString().c_str() : "—",
-                MCP23017_ADDR, i2cStr, s_mcpOk ? "OK" : "FAIL", mqttStr, (int)I2C_SDA, (int)I2C_SCL);
-#endif
+  Serial.printf("[HB] ACTUATOR  ESPNOW=%s  STBY=%s  SOL=%s  DMX=%s  rx=%u  last=%s %s  ago=%lums  ch=%u  mac=%s  up=%lus\n",
+                espnowActuatorReady() ? "OK" : "DOWN",
+                motorOutputStbyLevel() < 0 ? "?" : (motorOutputStbyEnabled() ? "H" : "L"),
+                solenoidOutputReady() ? "OK" : "FAIL", dmxOutputReady() ? "OK" : "FAIL", (unsigned)s_rxCount,
+                lastColor, s_lastOn ? "ON" : "OFF", s_lastRxMs ? (unsigned long)sinceRx : 0UL,
+                (unsigned)ESPNOW_WIFI_CHANNEL, WiFi.macAddress().c_str(), (unsigned long)(now / 1000));
 }
 
-static int channelForColor(const char *c) {
-  if (!c || !*c)
-    return -1;
-  if (!strcasecmp(c, "red"))
-    return 0;
-  if (!strcasecmp(c, "green"))
-    return 1;
-  if (!strcasecmp(c, "blue"))
-    return 2;
-  if (!strcasecmp(c, "yellow"))
-    return 3;
-  return -1;
-}
-
-static void setSolenoid(uint8_t ch, bool on) {
-  if (!s_mcpOk || ch >= 8)
-    return;
-  mcp.digitalWrite(ch, on ? HIGH : LOW);
-}
-
-static void onMqttMessage(char *topic, byte *payload, unsigned int len) {
-  (void)topic;
-  if (len >= 32) {
-    Serial.printf("[MQTT] rx ignored len=%u (max 31)\n", len);
-    return;
-  }
-  char buf[32];
-  memcpy(buf, payload, len);
-  buf[len] = 0;
-
-  char *comma = strchr(buf, ',');
-  if (!comma) {
-    Serial.printf("[MQTT] rx ignored no_comma \"%s\"\n", buf);
-    return;
-  }
-  *comma = 0;
-  // Trim color token — brokers/HA often append \r\n; strcmp would fail on "yellow\r".
-  char *cstart = buf;
-  while (*cstart && std::isspace((unsigned char)*cstart))
-    ++cstart;
-  char *cend = comma;
-  while (cend > cstart && std::isspace((unsigned char)cend[-1]))
-    --cend;
-  *cend = '\0';
-
-  char *vstart = comma + 1;
-  while (*vstart && std::isspace((unsigned char)*vstart))
-    ++vstart;
-  int on = atoi(vstart);
-
-  int ch = channelForColor(cstart);
-  if (ch < 0) {
-    Serial.printf("[MQTT] rx ignored unknown_color len=%u \"%s\"\n", len, cstart);
-    return;
-  }
-  if (!s_mcpOk) {
-    static bool s_loggedMcpSkip;
-    if (!s_loggedMcpSkip) {
-      s_loggedMcpSkip = true;
-      Serial.println("[SOL] MCP23017 not initialized — commands parsed but not driven");
-    }
-    return;
-  }
-  setSolenoid((uint8_t)ch, on != 0);
-  Serial.printf("[SOL] ch=%d %s\n", ch, on ? "ON" : "OFF");
-}
-
-static void mqttCallback(char *topic, byte *payload, unsigned int len) {
-  char preview[40];
-  unsigned n = len < sizeof(preview) - 1 ? len : sizeof(preview) - 2;
-  memcpy(preview, payload, n);
-  preview[n] = 0;
-  Serial.printf("[MQTT] rx topic=%s len=%u \"%s\"\n", topic ? topic : "?", len, preview);
-  onMqttMessage(topic, payload, len);
-}
-
-static bool netLinkUp() {
-#if LILYGO_ETH_BOARD != 0
-  return lilygoEthW5500Connected();
-#else
-  return WiFi.status() == WL_CONNECTED;
-#endif
-}
-
-static void mqttReconnect() {
-  if (!netLinkUp())
-    return;
-  const char *user = MQTT_USER[0] ? MQTT_USER : nullptr;
-  const char *pass = MQTT_PASSWORD[0] ? MQTT_PASSWORD : nullptr;
-  if (s_mqtt.connect("pyrrisma-solenoid", user, pass)) {
-    s_mqtt.subscribe(MQTT_TOPIC_SOLENOID_CMD);
-    Serial.println("[MQTT] subscribed");
-  }
+static void printBootConfig() {
+  Serial.println("[BOOT] Subsystems:");
+  Serial.printf("  ESP-NOW: RX broadcast  channel=%u\n", (unsigned)ESPNOW_WIFI_CHANNEL);
+  Serial.printf("  Motors: STBY=GPIO%d  red=%d/%d  green=%d/%d  yellow=%d/%d\n", (int)MOTOR_STBY_PIN,
+                (int)MOTOR_RED_IN1, (int)MOTOR_RED_IN2, (int)MOTOR_GREEN_IN1, (int)MOTOR_GREEN_IN2,
+                (int)MOTOR_YELLOW_IN1, (int)MOTOR_YELLOW_IN2);
+  Serial.printf("  Solenoids: MCP23017 SDA=%d SCL=%d  ch0=red ch1=green ch2=blue ch3=yellow\n", (int)I2C_SDA,
+                (int)I2C_SCL);
+  Serial.printf("  DMX: TX=%d RX=%d RTS=%d  par@%u  bubble@%u\n", (int)DMX_TX_PIN, (int)DMX_RX_PIN,
+                (int)DMX_RTS_PIN, (unsigned)DMX_PAR_START_ADDR, (unsigned)DMX_BUBBLE_ADDR);
+  Serial.println("[BOOT] Waiting for ESP-NOW from controller...");
 }
 
 void setup() {
-  Serial.begin(115200);
-  delay(500);
-  Serial.println("\n=== Pyrrisma solenoid node (MCP23017) ===");
-  Serial.printf("[I2C] SDA=GPIO%d SCL=GPIO%d  MCP target=0x%02X  hb every %dms\n", (int)I2C_SDA, (int)I2C_SCL,
-                MCP23017_ADDR, SOLENOID_DEBUG_HB_MS);
+  waitForUsbSerial();
+  motorOutputEarlyInit();
 
-  Wire.begin(I2C_SDA, I2C_SCL, 100000);
-  s_mcpOk = mcp.begin_I2C(MCP23017_ADDR, &Wire);
-  if (!s_mcpOk) {
-    Serial.printf("[MCP23017] begin_I2C(0x%02X) failed — check STEMMA QT / wiring\n", MCP23017_ADDR);
-  } else {
-    Serial.printf("[MCP23017] OK addr=0x%02X\n", MCP23017_ADDR);
-    for (int i = 0; i < 8; i++) {
-      mcp.pinMode(i, OUTPUT);
-      mcp.digitalWrite(i, LOW);
-    }
-  }
+  serialStatusBanner("ACTUATOR (ESP-NOW — motors + solenoids + DMX)");
+  Serial.println("[BOOT] Serial OK — logging enabled");
 
-  s_mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  s_mqtt.setCallback(mqttCallback);
-  s_mqtt.setBufferSize(128);
+  motorOutputBegin();
+  const bool solOk = solenoidOutputBegin();
+  const bool dmxOk = dmxOutputBegin();
+  const bool espOk = espnowActuatorBeginRx(onEspnowCmd);
 
-#if LILYGO_ETH_BOARD != 0
-  Serial.println("[ETH] starting W5500 (DHCP)...");
-  if (!lilygoEthW5500Begin())
-    Serial.println("[ETH] ETH.begin failed");
-  else {
-    uint32_t t0 = millis();
-    while (!lilygoEthW5500Connected() && millis() - t0 < 45000)
-      delay(200);
-    if (lilygoEthW5500Connected())
-      Serial.printf("[ETH] OK %s\n", lilygoEthLocalIP().toString().c_str());
-    else
-      Serial.println("[ETH] no IP yet (cable/DHCP); will retry in loop");
-  }
-#else
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.printf("[WiFi] connecting to %s ...\n", WIFI_SSID);
-  uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 30000)
-    delay(200);
-  if (WiFi.status() == WL_CONNECTED)
-    Serial.printf("[WiFi] OK %s\n", WiFi.localIP().toString().c_str());
-  else
-    Serial.println("[WiFi] failed, retrying in loop");
-#endif
+  printBootConfig();
+  Serial.printf("[BOOT] solenoids=%s  dmx=%s  espnow=%s\n", solOk ? "OK" : "FAIL", dmxOk ? "OK" : "FAIL",
+                espOk ? "OK" : "FAIL");
 }
 
 void loop() {
   const uint32_t now = millis();
   debugHeartbeat(now);
-
-  if (!netLinkUp()) {
-#if LILYGO_ETH_BOARD == 0
-    static uint32_t t;
-    if (millis() - t > 5000) {
-      t = millis();
-      WiFi.reconnect();
-    }
-#endif
-    delay(100);
-    return;
-  }
-  if (!s_mqtt.connected()) {
-    static uint32_t tr;
-    if (millis() - tr > 3000) {
-      tr = millis();
-      mqttReconnect();
-    }
-    delay(50);
-    return;
-  }
-  s_mqtt.loop();
+  dmxOutputService(now);
+  delay(1);
 }

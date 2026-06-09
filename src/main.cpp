@@ -26,7 +26,8 @@
 #include "display.h"
 #include "audio.h"
 #include "debug.h"
-#include "mqtt_link.h"
+#include "actuator_link.h"
+#include "serial_status.h"
 #include "rhythm_game.h"
 
 // All config definitions are now in config.cpp
@@ -52,8 +53,8 @@ void setup(){
   Serial.begin(115200);
   delay(3000); // Long delay
   
-  Serial.println("\n\n\n=== ESP32-S3 Synth Controller ===");
-  Serial.println("Serial initialized successfully!");
+  serialStatusBanner("CONTROLLER (synth + rhythm game)");
+  Serial.println("Serial initialized — use tags [HB] [ESPNOW] [ACT] to filter mentally.");
   delay(500);
   
   // GPIO testing - uncomment to enable
@@ -81,8 +82,9 @@ void setup(){
   lcd.setCursor(0,1); lcd.print("I2C: "); lcd.print(devs.length()?devs:"none");
   Serial.printf("[I2C] Devices found: %s\n", devs.length()?devs.c_str():"none");
 
-  Serial.println("[MQTT] Starting WiFi/MQTT (solenoid commands)...");
-  mqttLinkSetup();
+  Serial.println("[ESPNOW] Starting actuator link (solenoid/DMX commands)...");
+  if (!actuatorLinkSetup())
+    Serial.println("[ESPNOW] WARNING: actuator link failed — side buttons will not drive remote outputs");
 
   // PCA init
   Serial.println("[PCA] Initializing PCA9685 drivers...");
@@ -229,7 +231,7 @@ void loop(){
     buttonsRestoreInputPullups();
   }
 
-  mqttLinkLoop();
+  actuatorLinkLoop();
 
   uint32_t now=millis();
   static uint32_t loopCounter = 0;
@@ -254,7 +256,7 @@ void loop(){
       lastPressMs=now;
       Serial.printf("[BTN] GPIO %d (idx %d) PRESSED\n", BTN_PINS[i], i);
       if (i <= 3 || (i >= 6 && i <= 9))
-        mqttSolenoidPulseOnSideColumnPress(i);
+        actuatorSolenoidPulseOnSideColumnPress(i);
     }
     if (eu) {
       releaseTs[i]=now;

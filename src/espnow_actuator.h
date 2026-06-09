@@ -1,0 +1,20 @@
+#ifndef ESPNOW_ACTUATOR_H
+#define ESPNOW_ACTUATOR_H
+
+#include <Arduino.h>
+#include "actuator_protocol.h"
+
+typedef void (*EspnowActuatorRecvFn)(const ActuatorCmdPacket *pkt, const uint8_t mac[6]);
+
+bool espnowActuatorBeginTx();
+bool espnowActuatorBeginRx(EspnowActuatorRecvFn onCmd);
+
+// Match receiver to controller AP channel when known (call after WiFi connected).
+void espnowActuatorSetWifiChannel(uint8_t channel);
+
+bool espnowActuatorSend(const ActuatorCmdPacket *pkt);
+bool espnowActuatorReady();
+
+ActuatorCmdPacket espnowActuatorMakePacket(ActuatorColor color, bool on);
+
+#endif
