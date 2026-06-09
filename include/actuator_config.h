@@ -7,7 +7,7 @@
 #define ESPNOW_WIFI_CHANNEL 1
 #endif
 
-// Controller pulse width (monostable); actuator mirrors ON then OFF packets.
+// Legacy pulse width (unused — side buttons now hold ON while pressed).
 #ifndef ACTUATOR_PULSE_MS
 #define ACTUATOR_PULSE_MS 250
 #endif

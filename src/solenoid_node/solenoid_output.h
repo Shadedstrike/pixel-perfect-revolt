@@ -10,8 +10,17 @@
 #define I2C_SCL 17
 #endif
 
+#ifndef MCP23017_ADDR
+#define MCP23017_ADDR 0x20
+#endif
+
 bool solenoidOutputBegin();
 bool solenoidOutputReady();
 void solenoidOutputSetChannel(uint8_t ch, bool on);
+
+// Print all I2C devices on the bus (requires Wire already begun).
+void solenoidOutputPrintI2cScan();
+// Live ACK check for MCP23017 (does not require MCP driver init).
+bool solenoidOutputProbeMcp();
 
 #endif

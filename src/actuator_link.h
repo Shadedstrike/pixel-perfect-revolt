@@ -6,9 +6,8 @@
 bool actuatorLinkSetup();
 void actuatorLinkLoop();
 
-// Side-column press: latch ON over ESP-NOW, auto OFF after ACTUATOR_PULSE_MS (retrigger extends).
-void actuatorSolenoidPulseOnSideColumnPress(int btnIdx);
-void actuatorSolenoidPulseService(uint32_t nowMs);
+// Side-column hold: ON while pressed, OFF on release (left/right pairs share a color).
+void actuatorSolenoidSideColumnHold(int btnIdx, bool on);
 
 bool actuatorPublishForSideColumn(int btnIdx, bool on);
 bool actuatorPublishForGpio(int gpio, bool on);

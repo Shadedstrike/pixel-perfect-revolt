@@ -256,11 +256,13 @@ void loop(){
       lastPressMs=now;
       Serial.printf("[BTN] GPIO %d (idx %d) PRESSED\n", BTN_PINS[i], i);
       if (i <= 3 || (i >= 6 && i <= 9))
-        actuatorSolenoidPulseOnSideColumnPress(i);
+        actuatorSolenoidSideColumnHold(i, true);
     }
     if (eu) {
       releaseTs[i]=now;
       Serial.printf("[BTN] GPIO %d (idx %d) RELEASED\n", BTN_PINS[i], i);
+      if (i <= 3 || (i >= 6 && i <= 9))
+        actuatorSolenoidSideColumnHold(i, false);
     }
   }
 

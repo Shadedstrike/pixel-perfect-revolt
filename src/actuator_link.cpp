@@ -62,7 +62,7 @@ static ActuatorColor colorNameToEnum(const char *c) {
   return ACTUATOR_COLOR_COUNT;
 }
 
-static int colorEnumToPulseSlot(ActuatorColor color) {
+static int colorEnumToHoldSlot(ActuatorColor color) {
   switch (color) {
     case ACTUATOR_COLOR_YELLOW:
       return 0;
@@ -77,6 +77,15 @@ static int colorEnumToPulseSlot(ActuatorColor color) {
   }
 }
 
+static int sideColumnBtnIdxToHoldSlot(int btnIdx) {
+  const char *color = sideColumnBtnIdxToColor(btnIdx);
+  if (!color)
+    return -1;
+  return colorEnumToHoldSlot(colorNameToEnum(color));
+}
+
+static uint8_t s_colorHoldCount[4];
+
 static bool actuatorPublishColor(const char *color, bool on) {
   const ActuatorColor ac = colorNameToEnum(color);
   if (ac >= ACTUATOR_COLOR_COUNT)
@@ -90,56 +99,43 @@ static bool actuatorPublishColor(const char *color, bool on) {
     Serial.printf("[ESPNOW] tx FAIL color=%s on=%d seq=%u\n", color, on ? 1 : 0, (unsigned)pkt.seq);
   } else {
     ++s_txCount;
-    Serial.printf("[ESPNOW] tx color=%s on=%d seq=%u total_tx=%u pulse_ms=%u\n", color, on ? 1 : 0,
-                  (unsigned)pkt.seq, (unsigned)s_txCount, (unsigned)ACTUATOR_PULSE_MS);
+    Serial.printf("[ESPNOW] tx color=%s on=%d seq=%u total_tx=%u\n", color, on ? 1 : 0, (unsigned)pkt.seq,
+                  (unsigned)s_txCount);
   }
   return ok;
 }
 
-static uint32_t s_pulseEndMs[4];
-static const ActuatorColor kPulseColors[4] = {ACTUATOR_COLOR_YELLOW, ACTUATOR_COLOR_BLUE, ACTUATOR_COLOR_GREEN,
-                                              ACTUATOR_COLOR_RED};
-
-static const char *colorEnumName(ActuatorColor c) {
-  switch (c) {
-    case ACTUATOR_COLOR_RED:
-      return "red";
-    case ACTUATOR_COLOR_GREEN:
-      return "green";
-    case ACTUATOR_COLOR_BLUE:
-      return "blue";
-    case ACTUATOR_COLOR_YELLOW:
-      return "yellow";
-    default:
-      return "?";
-  }
-}
-
-void actuatorSolenoidPulseOnSideColumnPress(int btnIdx) {
+void actuatorSolenoidSideColumnHold(int btnIdx, bool on) {
   const char *color = sideColumnBtnIdxToColor(btnIdx);
-  if (!color) {
+  const int slot = sideColumnBtnIdxToHoldSlot(btnIdx);
+  if (!color || slot < 0) {
     Serial.printf("[ACT] btn=%d ignored (no color map)\n", btnIdx);
     return;
   }
-  const ActuatorColor ac = colorNameToEnum(color);
-  const int slot = colorEnumToPulseSlot(ac);
-  if (slot < 0)
-    return;
-  Serial.printf("[ACT] side_btn=%d -> %s ON (pulse %ums)\n", btnIdx, color, (unsigned)ACTUATOR_PULSE_MS);
-  s_pulseEndMs[slot] = millis() + (uint32_t)ACTUATOR_PULSE_MS;
-  actuatorPublishColor(color, true);
-}
 
-void actuatorSolenoidPulseService(uint32_t nowMs) {
-  for (int i = 0; i < 4; i++) {
-    const uint32_t end = s_pulseEndMs[i];
-    if (end == 0)
-      continue;
-    if ((int32_t)(nowMs - end) < 0)
-      continue;
-    s_pulseEndMs[i] = 0;
-    Serial.printf("[ACT] pulse end -> %s OFF\n", colorEnumName(kPulseColors[i]));
-    actuatorPublishColor(colorEnumName(kPulseColors[i]), false);
+  if (on) {
+    if (s_colorHoldCount[slot] == 0) {
+      Serial.printf("[ACT] side_btn=%d -> %s ON (held)\n", btnIdx, color);
+      actuatorPublishColor(color, true);
+    } else {
+      Serial.printf("[ACT] side_btn=%d -> %s hold+1 (count=%u)\n", btnIdx, color,
+                    (unsigned)(s_colorHoldCount[slot] + 1));
+    }
+    if (s_colorHoldCount[slot] < 255)
+      ++s_colorHoldCount[slot];
+    return;
+  }
+
+  if (s_colorHoldCount[slot] == 0) {
+    Serial.printf("[ACT] side_btn=%d -> %s release ignored (count=0)\n", btnIdx, color);
+    return;
+  }
+  --s_colorHoldCount[slot];
+  if (s_colorHoldCount[slot] == 0) {
+    Serial.printf("[ACT] side_btn=%d -> %s OFF (released)\n", btnIdx, color);
+    actuatorPublishColor(color, false);
+  } else {
+    Serial.printf("[ACT] side_btn=%d -> %s hold-1 (count=%u)\n", btnIdx, color, (unsigned)s_colorHoldCount[slot]);
   }
 }
 
@@ -150,30 +146,26 @@ static void actuatorHeartbeat() {
     return;
   lastHb = now;
 
-  int activePulses = 0;
+  int activeHolds = 0;
   for (int i = 0; i < 4; i++) {
-    if (s_pulseEndMs[i] != 0)
-      ++activePulses;
+    if (s_colorHoldCount[i] != 0)
+      ++activeHolds;
   }
 
-  Serial.printf("[HB] role=CONTROLLER  ESPNOW=%s  ch=%u  mac=%s  tx=%u  active_pulses=%d  uptime=%lus\n",
+  Serial.printf("[HB] role=CONTROLLER  ESPNOW=%s  ch=%u  mac=%s  tx=%u  active_holds=%d  uptime=%lus\n",
                 espnowActuatorReady() ? "OK" : "DOWN", (unsigned)ESPNOW_WIFI_CHANNEL, WiFi.macAddress().c_str(),
-                (unsigned)s_txCount, activePulses, (unsigned long)(now / 1000));
+                (unsigned)s_txCount, activeHolds, (unsigned long)(now / 1000));
 }
 
 bool actuatorLinkSetup() {
-  Serial.println("[BOOT] Actuator link: side-column presses -> ESP-NOW -> remote solenoids + DMX.");
-  Serial.printf("[BOOT] ESP-NOW channel=%u  pulse=%ums\n", (unsigned)ESPNOW_WIFI_CHANNEL,
-                (unsigned)ACTUATOR_PULSE_MS);
+  Serial.println("[BOOT] Actuator link: side-column hold -> ESP-NOW -> remote solenoids + motors + DMX.");
+  Serial.printf("[BOOT] ESP-NOW channel=%u  mode=hold-while-pressed\n", (unsigned)ESPNOW_WIFI_CHANNEL);
   const bool ok = espnowActuatorBeginTx();
   Serial.printf("[BOOT] ESP-NOW TX %s  mac=%s\n", ok ? "ready" : "FAILED", WiFi.macAddress().c_str());
   return ok;
 }
 
-void actuatorLinkLoop() {
-  actuatorHeartbeat();
-  actuatorSolenoidPulseService(millis());
-}
+void actuatorLinkLoop() { actuatorHeartbeat(); }
 
 bool actuatorPublishForSideColumn(int btnIdx, bool on) {
   return actuatorPublishColor(sideColumnBtnIdxToColor(btnIdx), on);
