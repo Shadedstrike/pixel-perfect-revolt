@@ -20,6 +20,7 @@ bool edgeDownArr[10]={0}, edgeUpArr[10]={0};
 uint32_t releaseTs[10]={0}, lastPressMs=0;
 
 uint8_t lastR[10]={0}, lastG[10]={0}, lastB[10]={0};
+uint8_t displayR[10]={0}, displayG[10]={0}, displayB[10]={0};
 float idleRateDegPerSec[10], idleBaseHue[10];
 
 uint8_t idleMode=1; // 0=RGB breathe, 1=warm flame, 2=cool flame, 3=RGB+flame, 4=solid colors, 5=rainbow wave, 6=aurora, 7=starlight, 8=gradient flow, 9=matrix rain, 10=lightning strike, 11=plasma swirl
@@ -58,6 +59,9 @@ void pcaSet(uint8_t drv,uint8_t ch,uint8_t v){
 }
 
 void setLED_RGB(uint8_t i,uint8_t r,uint8_t g,uint8_t b){
+  displayR[i] = r;
+  displayG[i] = g;
+  displayB[i] = b;
   if (i == IDX_FRONT_L || i == IDX_FRONT_R) {
     r = (uint8_t)lroundf((float)r * FRONT_LED_BRIGHTNESS_SCALE);
     g = (uint8_t)lroundf((float)g * FRONT_LED_BRIGHTNESS_SCALE);

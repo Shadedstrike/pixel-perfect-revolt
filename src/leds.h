@@ -34,6 +34,9 @@ extern uint32_t lastPressMs;
 extern uint8_t lastR[10];
 extern uint8_t lastG[10];
 extern uint8_t lastB[10];
+extern uint8_t displayR[10];
+extern uint8_t displayG[10];
+extern uint8_t displayB[10];
 extern float idleRateDegPerSec[10];
 extern float idleBaseHue[10];
 

@@ -98,8 +98,21 @@ static void onEspnowRecv(const uint8_t *mac, const uint8_t *data, int len) {
   }
   char macStr[18];
   formatMac(macStr, sizeof(macStr), mac);
-  Serial.printf("[ESPNOW] rx from %s color=%s on=%u seq=%u\n", macStr, serialStatusColorNameU8(pkt.color),
-                (unsigned)pkt.on, (unsigned)pkt.seq);
+  if (pkt.on == ACTUATOR_ON_BUBBLE_PARTY) {
+    Serial.printf("[ESPNOW] rx BUBBLE_PARTY R=%u G=%u B=%u W=%u amber=%u seq=%u\n", (unsigned)pkt.level_r,
+                  (unsigned)pkt.level_g, (unsigned)pkt.level_b, (unsigned)pkt.level_w, (unsigned)pkt.color,
+                  (unsigned)pkt.seq);
+  } else if (pkt.on == ACTUATOR_ON_BUBBLE_KILL) {
+    Serial.printf("[ESPNOW] rx BUBBLE_KILL seq=%u\n", (unsigned)pkt.seq);
+  } else if (pkt.on == ACTUATOR_ON_IDLE_DMX) {
+    Serial.printf("[ESPNOW] rx IDLE_DMX R=%u G=%u B=%u seq=%u\n", (unsigned)pkt.level_r, (unsigned)pkt.level_g,
+                  (unsigned)pkt.level_b, (unsigned)pkt.seq);
+  } else if (pkt.on == ACTUATOR_ON_IDLE_END) {
+    Serial.printf("[ESPNOW] rx IDLE_END seq=%u\n", (unsigned)pkt.seq);
+  } else {
+    Serial.printf("[ESPNOW] rx from %s color=%s on=%u seq=%u\n", macStr, serialStatusColorNameU8(pkt.color),
+                  (unsigned)pkt.on, (unsigned)pkt.seq);
+  }
   s_recvFn(&pkt, mac);
 }
 
@@ -131,7 +144,53 @@ ActuatorCmdPacket espnowActuatorMakePacket(ActuatorColor color, bool on) {
   pkt.magic = ACTUATOR_PROTO_MAGIC;
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.color = (uint8_t)color;
-  pkt.on = on ? 1u : 0u;
+  pkt.on = on ? ACTUATOR_ON_ON : ACTUATOR_ON_OFF;
+  pkt.seq = ++s_txSeq;
+  return pkt;
+}
+
+ActuatorCmdPacket espnowActuatorMakeBubblePartyPacket(uint8_t r, uint8_t g, uint8_t b, uint8_t w, uint8_t amber) {
+  ActuatorCmdPacket pkt = {};
+  pkt.magic = ACTUATOR_PROTO_MAGIC;
+  pkt.version = ACTUATOR_PROTO_VERSION;
+  pkt.color = amber;
+  pkt.on = ACTUATOR_ON_BUBBLE_PARTY;
+  pkt.seq = ++s_txSeq;
+  pkt.level_r = r;
+  pkt.level_g = g;
+  pkt.level_b = b;
+  pkt.level_w = w;
+  return pkt;
+}
+
+ActuatorCmdPacket espnowActuatorMakeBubbleKillPacket() {
+  ActuatorCmdPacket pkt = {};
+  pkt.magic = ACTUATOR_PROTO_MAGIC;
+  pkt.version = ACTUATOR_PROTO_VERSION;
+  pkt.on = ACTUATOR_ON_BUBBLE_KILL;
+  pkt.seq = ++s_txSeq;
+  return pkt;
+}
+
+ActuatorCmdPacket espnowActuatorMakeIdleDmxPacket(uint8_t r, uint8_t g, uint8_t b, uint8_t w, uint8_t amber) {
+  ActuatorCmdPacket pkt = {};
+  pkt.magic = ACTUATOR_PROTO_MAGIC;
+  pkt.version = ACTUATOR_PROTO_VERSION;
+  pkt.color = amber;
+  pkt.on = ACTUATOR_ON_IDLE_DMX;
+  pkt.seq = ++s_txSeq;
+  pkt.level_r = r;
+  pkt.level_g = g;
+  pkt.level_b = b;
+  pkt.level_w = w;
+  return pkt;
+}
+
+ActuatorCmdPacket espnowActuatorMakeIdleEndPacket() {
+  ActuatorCmdPacket pkt = {};
+  pkt.magic = ACTUATOR_PROTO_MAGIC;
+  pkt.version = ACTUATOR_PROTO_VERSION;
+  pkt.on = ACTUATOR_ON_IDLE_END;
   pkt.seq = ++s_txSeq;
   return pkt;
 }

@@ -16,5 +16,9 @@ bool espnowActuatorSend(const ActuatorCmdPacket *pkt);
 bool espnowActuatorReady();
 
 ActuatorCmdPacket espnowActuatorMakePacket(ActuatorColor color, bool on);
+ActuatorCmdPacket espnowActuatorMakeBubblePartyPacket(uint8_t r, uint8_t g, uint8_t b, uint8_t w, uint8_t amber);
+ActuatorCmdPacket espnowActuatorMakeBubbleKillPacket();
+ActuatorCmdPacket espnowActuatorMakeIdleDmxPacket(uint8_t r, uint8_t g, uint8_t b, uint8_t w, uint8_t amber);
+ActuatorCmdPacket espnowActuatorMakeIdleEndPacket();
 
 #endif

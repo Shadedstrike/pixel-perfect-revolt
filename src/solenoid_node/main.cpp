@@ -35,8 +35,9 @@ static void printBootConfig() {
                 (int)MOTOR_YELLOW_IN1, (int)MOTOR_YELLOW_IN2);
   Serial.printf("  Solenoids: MCP23017 SDA=%d SCL=%d  ch0=red ch1=green ch2=blue ch3=yellow\n", (int)I2C_SDA,
                 (int)I2C_SCL);
-  Serial.printf("  DMX: TX=%d RX=%d RTS=%d  par@%u  bubble@%u\n", (int)DMX_TX_PIN, (int)DMX_RX_PIN,
-                (int)DMX_RTS_PIN, (unsigned)DMX_PAR_START_ADDR, (unsigned)DMX_BUBBLE_ADDR);
+  Serial.printf("  DMX: TX=%d RX=%d RTS=%d  par1@%u  bubble@%u  par2@%u  par3@%u\n", (int)DMX_TX_PIN, (int)DMX_RX_PIN,
+                (int)DMX_RTS_PIN, (unsigned)DMX_PAR_START_ADDR, (unsigned)DMX_BUBBLE_ADDR, (unsigned)DMX_PAR2_ADDR,
+                (unsigned)DMX_PAR3_ADDR);
   Serial.println("[BOOT] Waiting for ESP-NOW from controller...");
 }
 
@@ -67,47 +68,56 @@ static void applyActuatorColor(ActuatorColor color, bool on) {
 
   solenoidOutputSetChannel((uint8_t)color, on);
 
-  int8_t parOffset = -1;
-  bool bubble = false;
-  switch (color) {
-    case ACTUATOR_COLOR_RED:
-      parOffset = DMX_PAR_CH_RED;
-      break;
-    case ACTUATOR_COLOR_GREEN:
-      parOffset = DMX_PAR_CH_GREEN;
-      break;
-    case ACTUATOR_COLOR_BLUE:
-      parOffset = DMX_PAR_CH_BLUE;
-      break;
-    case ACTUATOR_COLOR_YELLOW:
-      parOffset = DMX_PAR_CH_AMBER;
-      bubble = true;
-      break;
-    default:
-      Serial.println(" | ignored");
-      return;
+  if (color >= ACTUATOR_COLOR_COUNT) {
+    Serial.println(" | ignored");
+    return;
   }
 
-  if (dmxOutputReady() && parOffset >= 0) {
-    const uint16_t slot = (uint16_t)(DMX_PAR_START_ADDR + (uint8_t)parOffset);
-    dmxOutputSetSlot(slot, on ? (uint8_t)DMX_LEVEL_FULL : 0);
-    Serial.printf(" | dmx=%u", (unsigned)slot);
+  if (dmxOutputReady()) {
+    dmxOutputSetColorHold(color, on);
+    Serial.print(" | dmx=leds");
+    if (dmxOutputBubbleFanActive(millis()))
+      Serial.print("+fan");
   } else {
     Serial.print(" | dmx=SKIP");
   }
 
-  if (bubble) {
-    dmxOutputSetBubble(on);
-    Serial.print(" | bubble");
-  }
-
   Serial.println();
+}
+
+static void onBubblePartyCmd(const ActuatorCmdPacket *pkt) {
+  const uint32_t now = millis();
+  dmxOutputExtendBubbleParty(now, pkt->level_r, pkt->level_g, pkt->level_b, pkt->level_w, pkt->color);
 }
 
 static void onEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
   (void)mac;
   ++s_rxCount;
   s_lastRxMs = millis();
+
+  if (pkt->on == ACTUATOR_ON_BUBBLE_PARTY) {
+    onBubblePartyCmd(pkt);
+    return;
+  }
+
+  if (pkt->on == ACTUATOR_ON_BUBBLE_KILL) {
+    if (dmxOutputReady())
+      dmxOutputKillBubbleParty();
+    return;
+  }
+
+  if (pkt->on == ACTUATOR_ON_IDLE_DMX) {
+    if (dmxOutputReady())
+      dmxOutputSetIdleLevels(pkt->level_r, pkt->level_g, pkt->level_b, pkt->level_w, pkt->color);
+    return;
+  }
+
+  if (pkt->on == ACTUATOR_ON_IDLE_END) {
+    if (dmxOutputReady())
+      dmxOutputClearIdle();
+    return;
+  }
+
   s_lastColor = (ActuatorColor)pkt->color;
   s_lastOn = pkt->on != 0;
   applyActuatorColor((ActuatorColor)pkt->color, pkt->on != 0);

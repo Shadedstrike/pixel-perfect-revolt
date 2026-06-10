@@ -27,6 +27,7 @@
 #include "audio.h"
 #include "debug.h"
 #include "actuator_link.h"
+#include "actuator_config.h"
 #include "serial_status.h"
 #include "rhythm_game.h"
 
@@ -255,16 +256,15 @@ void loop(){
     if (ed) {
       lastPressMs=now;
       Serial.printf("[BTN] GPIO %d (idx %d) PRESSED\n", BTN_PINS[i], i);
-      if (i <= 3 || (i >= 6 && i <= 9))
-        actuatorSolenoidSideColumnHold(i, true);
     }
     if (eu) {
       releaseTs[i]=now;
       Serial.printf("[BTN] GPIO %d (idx %d) RELEASED\n", BTN_PINS[i], i);
-      if (i <= 3 || (i >= 6 && i <= 9))
-        actuatorSolenoidSideColumnHold(i, false);
     }
   }
+
+  actuatorLinkSyncSideColumnHolds(down);
+  actuatorLinkBubbleHoldCheck(down, now);
 
   // Pump rhythm audio before game logic so stream-active checks see a fed decoder.
   if (rhythmGameOwnsAudioOutput())
@@ -1224,6 +1224,9 @@ void loop(){
   if (edgeDownArr[IDX_FRONT_R]) rainbowStartHue[IDX_FRONT_R]=random(0,360);
 
   } // !rhythmGameIsActive() (LED strip)
+
+  actuatorLinkUpdateIdle(idle && !rhythmGameIsActive(), now, displayR[ACTUATOR_IDLE_MIRROR_LED_IDX],
+                         displayG[ACTUATOR_IDLE_MIRROR_LED_IDX], displayB[ACTUATOR_IDLE_MIRROR_LED_IDX]);
 
   // ========= Audio render =========
   if (rhythmGameOwnsAudioOutput())
