@@ -35,9 +35,8 @@ static void printBootConfig() {
                 (int)MOTOR_YELLOW_IN1, (int)MOTOR_YELLOW_IN2);
   Serial.printf("  Solenoids: MCP23017 SDA=%d SCL=%d  ch0=red ch1=green ch2=blue ch3=yellow\n", (int)I2C_SDA,
                 (int)I2C_SCL);
-  Serial.printf("  DMX: TX=%d RX=%d RTS=%d  par1@%u  bubble@%u  par2@%u  par3@%u\n", (int)DMX_TX_PIN, (int)DMX_RX_PIN,
-                (int)DMX_RTS_PIN, (unsigned)DMX_PAR_START_ADDR, (unsigned)DMX_BUBBLE_ADDR, (unsigned)DMX_PAR2_ADDR,
-                (unsigned)DMX_PAR3_ADDR);
+  Serial.printf("  DMX: TX=%d RX=%d RTS=%d  par@%u  bubble@%u (6ch)\n", (int)DMX_TX_PIN, (int)DMX_RX_PIN,
+                (int)DMX_RTS_PIN, (unsigned)DMX_PAR_START_ADDR, (unsigned)DMX_BUBBLE_ADDR);
   Serial.println("[BOOT] Waiting for ESP-NOW from controller...");
 }
 
@@ -66,7 +65,10 @@ static void applyActuatorColor(ActuatorColor color, bool on) {
     Serial.print(" | mot=—");
   }
 
-  solenoidOutputSetChannel((uint8_t)color, on);
+  if (color != ACTUATOR_COLOR_BLUE)
+    solenoidOutputSetChannel((uint8_t)color, on);
+  else
+    Serial.print(" | sol=—(blue disabled)");
 
   if (color >= ACTUATOR_COLOR_COUNT) {
     Serial.println(" | ignored");
@@ -90,10 +92,35 @@ static void onBubblePartyCmd(const ActuatorCmdPacket *pkt) {
   dmxOutputExtendBubbleParty(now, pkt->level_r, pkt->level_g, pkt->level_b, pkt->level_w, pkt->color);
 }
 
+static bool s_failsafeTripped = false;
+
+static void actuatorForceAllOutputsOff(const char *reason) {
+  Serial.printf("[SAFE] %s — solenoids/motors/fan OFF\n", reason);
+  solenoidOutputAllOff();
+  motorOutputAllOff();
+  if (dmxOutputReady())
+    dmxOutputForceSafeOutputs();
+}
+
+static void actuatorRxWatchdog(uint32_t now) {
+  if (!s_lastRxMs)
+    return;
+  if (now - s_lastRxMs < (uint32_t)ACTUATOR_RX_FAILSAFE_MS)
+    return;
+  if (!solenoidOutputAnyOn())
+    return;
+  if (s_failsafeTripped)
+    return;
+
+  s_failsafeTripped = true;
+  actuatorForceAllOutputsOff("ESP-NOW timeout");
+}
+
 static void onEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
   (void)mac;
   ++s_rxCount;
   s_lastRxMs = millis();
+  s_failsafeTripped = false;
 
   if (pkt->on == ACTUATOR_ON_BUBBLE_PARTY) {
     onBubblePartyCmd(pkt);
@@ -115,6 +142,12 @@ static void onEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
   if (pkt->on == ACTUATOR_ON_IDLE_END) {
     if (dmxOutputReady())
       dmxOutputClearIdle();
+    return;
+  }
+
+  if (pkt->on == ACTUATOR_ON_RGB_HOLD) {
+    if (dmxOutputReady())
+      dmxOutputSetCombinedRgbHold(pkt->level_r, pkt->level_g, pkt->level_b, pkt->color);
     return;
   }
 
@@ -181,6 +214,10 @@ void setup() {
   Serial.println("[BOOT] ESP-NOW RX...");
   s_espOk = espnowActuatorBeginRx(onEspnowCmd);
 
+  solenoidOutputAllOff();
+  if (s_dmxOk)
+    dmxOutputBootSafeState();
+
   printBootConfig();
   Serial.printf("[BOOT] solenoids=%s  dmx=%s  espnow=%s\n", s_solOk ? "OK" : "FAIL", s_dmxOk ? "OK" : "FAIL",
                 s_espOk ? "OK" : "FAIL");
@@ -199,6 +236,7 @@ void loop() {
   const uint32_t now = millis();
   debugAlive(now);
   debugHeartbeat(now);
+  actuatorRxWatchdog(now);
   dmxOutputService(now);
   delay(1);
 }

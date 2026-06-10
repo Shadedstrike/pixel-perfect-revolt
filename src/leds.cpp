@@ -4,7 +4,7 @@
 
 // LED state variables
 float pressHue[10] = {0,36,72,108,144,180,216,252,288,324};
-const uint32_t PRESS_FADE_MS=1000, IDLE_AFTER_MS=3000;
+const uint32_t PRESS_FADE_MS=1000, IDLE_AFTER_MS=10000;
 const float IDLE_V_MIN=0.08f, IDLE_V_MAX=0.28f, IDLE_LFO_HZ=1.0f/3.2f, IDLE_SAT=1.0f;
 const float PRESS_V=1.0f, RAINBOW_HZ=0.2f; // 5s sweep
 

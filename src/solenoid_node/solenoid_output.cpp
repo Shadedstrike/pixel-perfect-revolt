@@ -10,6 +10,7 @@
 
 static Adafruit_MCP23X17 s_mcp;
 static bool s_ready = false;
+static bool s_channelOn[8] = {};
 
 static bool i2cProbe(uint8_t addr) {
   Wire.beginTransmission(addr);
@@ -65,6 +66,20 @@ void solenoidOutputSetChannel(uint8_t ch, bool on) {
   }
   if (ch >= 8)
     return;
+  s_channelOn[ch] = on;
   s_mcp.digitalWrite(ch, on ? HIGH : LOW);
   Serial.printf("[SOL] ch=%u %s\n", (unsigned)ch, on ? "ON" : "OFF");
+}
+
+void solenoidOutputAllOff() {
+  for (uint8_t ch = 0; ch < 4; ch++)
+    solenoidOutputSetChannel(ch, false);
+}
+
+bool solenoidOutputAnyOn() {
+  for (uint8_t ch = 0; ch < 4; ch++) {
+    if (s_channelOn[ch])
+      return true;
+  }
+  return false;
 }

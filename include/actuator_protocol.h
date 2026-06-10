@@ -13,6 +13,7 @@
 #define ACTUATOR_ON_BUBBLE_KILL 3u
 #define ACTUATOR_ON_IDLE_DMX 4u
 #define ACTUATOR_ON_IDLE_END 5u
+#define ACTUATOR_ON_RGB_HOLD 6u
 
 enum ActuatorColor : uint8_t {
   ACTUATOR_COLOR_RED = 0,
@@ -38,7 +39,7 @@ static inline bool actuatorPacketValid(const ActuatorCmdPacket *p) {
   if (!p || p->magic != ACTUATOR_PROTO_MAGIC || p->version != ACTUATOR_PROTO_VERSION)
     return false;
   if (p->on == ACTUATOR_ON_BUBBLE_PARTY || p->on == ACTUATOR_ON_BUBBLE_KILL || p->on == ACTUATOR_ON_IDLE_DMX ||
-      p->on == ACTUATOR_ON_IDLE_END)
+      p->on == ACTUATOR_ON_IDLE_END || p->on == ACTUATOR_ON_RGB_HOLD)
     return true;
   return p->color < ACTUATOR_COLOR_COUNT && (p->on == ACTUATOR_ON_OFF || p->on == ACTUATOR_ON_ON);
 }

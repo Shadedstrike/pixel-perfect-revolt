@@ -426,6 +426,7 @@ void loop(){
 
   // Idle mode (used by LCD + LED when not in rhythm UI)
   bool idle = (!anyDown) && (now - lastPressMs > IDLE_AFTER_MS);
+  actuatorLinkSyncDmxRgb(down, now, idle && !rhythmGameIsActive());
 
   // Auto-advance idle LED/LCD mode every 2 minutes while unused (no rhythm UI).
   static uint32_t nextIdleAutoAdvanceMs = 0;
@@ -1225,8 +1226,7 @@ void loop(){
 
   } // !rhythmGameIsActive() (LED strip)
 
-  actuatorLinkUpdateIdle(idle && !rhythmGameIsActive(), now, displayR[ACTUATOR_IDLE_MIRROR_LED_IDX],
-                         displayG[ACTUATOR_IDLE_MIRROR_LED_IDX], displayB[ACTUATOR_IDLE_MIRROR_LED_IDX]);
+  actuatorLinkUpdateIdle(idle && !rhythmGameIsActive(), now, 0, 0, 0);
 
   // ========= Audio render =========
   if (rhythmGameOwnsAudioOutput())

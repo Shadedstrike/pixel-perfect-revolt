@@ -17,6 +17,8 @@
 bool solenoidOutputBegin();
 bool solenoidOutputReady();
 void solenoidOutputSetChannel(uint8_t ch, bool on);
+void solenoidOutputAllOff();
+bool solenoidOutputAnyOn();
 
 // Print all I2C devices on the bus (requires Wire already begun).
 void solenoidOutputPrintI2cScan();

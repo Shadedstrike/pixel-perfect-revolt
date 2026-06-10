@@ -7,6 +7,7 @@
 bool motorOutputBegin();
 void motorOutputEarlyInit();
 void motorOutputSetColor(ActuatorColor color, bool on);
+void motorOutputAllOff();
 bool motorOutputHasMotor(ActuatorColor color);
 bool motorOutputStbyEnabled();
 int motorOutputStbyLevel();

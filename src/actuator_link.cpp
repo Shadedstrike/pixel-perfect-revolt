@@ -5,6 +5,7 @@
 #include "serial_status.h"
 
 #include <WiFi.h>
+#include <cmath>
 #include <cstring>
 
 static uint32_t s_txCount = 0;
@@ -111,10 +112,10 @@ static void actuatorHeartbeat() {
 
 bool actuatorLinkSetup() {
   Serial.println("[BOOT] Actuator link: side-column hold -> ESP-NOW -> remote solenoids + motors + DMX.");
-  Serial.printf("[BOOT] ESP-NOW channel=%u  bubble: any btn %ums hold -> +%ums fan (stackable)\n",
+  Serial.printf("[BOOT] ESP-NOW channel=%u  bubble: %ums hold -> %ums fan once (re-arm on release)\n",
                 (unsigned)ESPNOW_WIFI_CHANNEL, (unsigned)BUBBLE_HOLD_TRIGGER_MS, (unsigned)BUBBLE_PARTY_MS);
-  Serial.printf("[BOOT] synth idle: kill bubble fan + mirror LED idx %u to DMX @ %uHz\n",
-                (unsigned)ACTUATOR_IDLE_MIRROR_LED_IDX, (unsigned)(1000u / ACTUATOR_IDLE_DMX_MS));
+  Serial.printf("[BOOT] synth idle: kill bubble fan + local PAR/bubble DMX animation @ %uHz keepalive\n",
+                (unsigned)(1000u / ACTUATOR_IDLE_DMX_MS));
   const bool ok = espnowActuatorBeginTx();
   Serial.printf("[BOOT] ESP-NOW TX %s  mac=%s\n", ok ? "ready" : "FAILED", WiFi.macAddress().c_str());
   return ok;
@@ -124,8 +125,8 @@ void actuatorLinkLoop() { actuatorHeartbeat(); }
 
 static uint8_t matchLevel(bool active) { return active ? (uint8_t)255 : 0; }
 
-static void deriveMatchedLightLevels(const bool down[10], uint8_t *r, uint8_t *g, uint8_t *b, uint8_t *w,
-                                     uint8_t *amber) {
+static void deriveMatchedLightLevels(const bool down[10], uint32_t nowMs, uint8_t *r, uint8_t *g, uint8_t *b,
+                                     uint8_t *w, uint8_t *amber) {
   *r = matchLevel(down[3] || down[9]);
   *g = matchLevel(down[2] || down[8]);
   *b = matchLevel(down[1] || down[7]);
@@ -134,15 +135,25 @@ static void deriveMatchedLightLevels(const bool down[10], uint8_t *r, uint8_t *g
   if (!*r && !*g && !*b && !*amber && (down[4] || down[5])) {
     *r = *g = *b = (uint8_t)255;
   }
+
+  if (!*r && !*g && !*b && !*amber)
+    return;
+
+  const float t = nowMs / 1000.0f;
+  const float pulse = 0.72f + 0.28f * sinf(2.0f * (float)M_PI * 1.8f * t);
+  *r = (uint8_t)lroundf((float)(*r)*pulse);
+  *g = (uint8_t)lroundf((float)(*g)*pulse);
+  *b = (uint8_t)lroundf((float)(*b)*pulse);
+  *amber = (uint8_t)lroundf((float)(*amber)*pulse);
 }
 
-static bool actuatorPublishBubblePartyExtend(const bool down[10], uint32_t intervalIndex) {
+static bool actuatorPublishBubblePartyExtend(const bool down[10], uint32_t nowMs, uint32_t intervalIndex) {
   uint8_t r = 0;
   uint8_t g = 0;
   uint8_t b = 0;
   uint8_t w = 0;
   uint8_t amber = 0;
-  deriveMatchedLightLevels(down, &r, &g, &b, &w, &amber);
+  deriveMatchedLightLevels(down, nowMs, &r, &g, &b, &w, &amber);
 
   if (!espnowActuatorReady()) {
     Serial.println("[ACT] bubble fan extend skipped — ESP-NOW not ready");
@@ -156,6 +167,14 @@ static bool actuatorPublishBubblePartyExtend(const bool down[10], uint32_t inter
   return ok;
 }
 
+static bool actuatorPublishPacket(const ActuatorCmdPacket *pkt, const char *label) {
+  if (!espnowActuatorReady() || !pkt)
+    return false;
+  const bool ok = espnowActuatorSend(pkt);
+  Serial.printf("[ACT] %s tx %s seq=%u\n", label, ok ? "OK" : "FAIL", (unsigned)pkt->seq);
+  return ok;
+}
+
 void actuatorLinkBubbleHoldCheck(const bool down[10], uint32_t nowMs) {
   bool anyDown = false;
   for (int i = 0; i < 10; i++) {
@@ -166,13 +185,16 @@ void actuatorLinkBubbleHoldCheck(const bool down[10], uint32_t nowMs) {
   }
 
   static uint32_t holdStartMs = 0;
-  static uint32_t firedIntervals = 0;
+  static bool bubbleArmed = true;
 
   if (!anyDown) {
     holdStartMs = 0;
-    firedIntervals = 0;
+    bubbleArmed = true;
     return;
   }
+
+  if (!bubbleArmed)
+    return;
 
   if (holdStartMs == 0)
     holdStartMs = nowMs;
@@ -181,25 +203,52 @@ void actuatorLinkBubbleHoldCheck(const bool down[10], uint32_t nowMs) {
   if (holdMs < (uint32_t)BUBBLE_HOLD_TRIGGER_MS)
     return;
 
-  const uint32_t completedIntervals = holdMs / (uint32_t)BUBBLE_HOLD_TRIGGER_MS;
-  while (firedIntervals < completedIntervals) {
-    ++firedIntervals;
-    actuatorPublishBubblePartyExtend(down, firedIntervals);
-  }
+  actuatorPublishBubblePartyExtend(down, nowMs, 1);
+  bubbleArmed = false;
 }
 
-static bool actuatorPublishPacket(const ActuatorCmdPacket *pkt, const char *label) {
-  if (!espnowActuatorReady() || !pkt)
-    return false;
-  const bool ok = espnowActuatorSend(pkt);
-  Serial.printf("[ACT] %s tx %s seq=%u\n", label, ok ? "OK" : "FAIL", (unsigned)pkt->seq);
-  return ok;
+void actuatorLinkSyncDmxRgb(const bool down[10], uint32_t nowMs, bool synthIdle) {
+  if (synthIdle || !espnowActuatorReady())
+    return;
+
+  static uint32_t lastTxMs = 0;
+  static uint8_t lastR = 0;
+  static uint8_t lastG = 0;
+  static uint8_t lastB = 0;
+  static uint8_t lastA = 0;
+
+  uint8_t r = 0;
+  uint8_t g = 0;
+  uint8_t b = 0;
+  uint8_t w = 0;
+  uint8_t amber = 0;
+  deriveMatchedLightLevels(down, nowMs, &r, &g, &b, &w, &amber);
+
+  const bool sideActive = r || g || b || amber;
+  if (!sideActive) {
+    if (lastR || lastG || lastB || lastA) {
+      const ActuatorCmdPacket pkt = espnowActuatorMakeRgbHoldPacket(0, 0, 0, 0, 0);
+      actuatorPublishPacket(&pkt, "rgb_hold_clear");
+      lastR = lastG = lastB = lastA = 0;
+    }
+    return;
+  }
+
+  if (nowMs - lastTxMs < (uint32_t)ACTUATOR_RGB_SYNC_MS && r == lastR && g == lastG && b == lastB && amber == lastA)
+    return;
+
+  lastTxMs = nowMs;
+  lastR = r;
+  lastG = g;
+  lastB = b;
+  lastA = amber;
+
+  const ActuatorCmdPacket pkt = espnowActuatorMakeRgbHoldPacket(r, g, b, w, amber);
+  actuatorPublishPacket(&pkt, "rgb_hold");
 }
 
 static void actuatorForceAllColorsOff() {
   for (int slot = 0; slot < 4; slot++) {
-    if (!s_colorRemoteOn[slot])
-      continue;
     const ActuatorColor color = colorSlotToEnum(slot);
     if (color >= ACTUATOR_COLOR_COUNT)
       continue;
@@ -209,14 +258,19 @@ static void actuatorForceAllColorsOff() {
 }
 
 void actuatorLinkUpdateIdle(bool synthIdle, uint32_t nowMs, uint8_t mirrorR, uint8_t mirrorG, uint8_t mirrorB) {
+  (void)mirrorR;
+  (void)mirrorG;
+  (void)mirrorB;
+
   static bool lastSynthIdle = false;
   static uint32_t lastIdleTxMs = 0;
 
   if (synthIdle && !lastSynthIdle) {
-    Serial.println("[ACT] synth idle enter — kill bubble fan, release holds, mirror DMX");
+    Serial.println("[ACT] synth idle enter — kill bubble fan, release holds, start DMX idle animation");
     const ActuatorCmdPacket killPkt = espnowActuatorMakeBubbleKillPacket();
     actuatorPublishPacket(&killPkt, "bubble_kill");
     actuatorForceAllColorsOff();
+    lastIdleTxMs = 0;
   }
 
   if (!synthIdle && lastSynthIdle) {
@@ -230,16 +284,12 @@ void actuatorLinkUpdateIdle(bool synthIdle, uint32_t nowMs, uint8_t mirrorR, uin
   if (!synthIdle)
     return;
 
-  if (nowMs - lastIdleTxMs < (uint32_t)ACTUATOR_IDLE_DMX_MS)
+  if (lastIdleTxMs != 0 && nowMs - lastIdleTxMs < (uint32_t)ACTUATOR_IDLE_DMX_MS)
     return;
   lastIdleTxMs = nowMs;
 
-  uint8_t amber = 0;
-  if (mirrorR > 0 && mirrorG > 0 && mirrorB < 64)
-    amber = (uint8_t)min(255, ((int)mirrorR + (int)mirrorG) / 2);
-
-  const ActuatorCmdPacket pkt = espnowActuatorMakeIdleDmxPacket(mirrorR, mirrorG, mirrorB, 0, amber);
-  actuatorPublishPacket(&pkt, "idle_dmx");
+  const ActuatorCmdPacket pkt = espnowActuatorMakeIdleDmxPacket(0, 0, 0, 0, 0);
+  actuatorPublishPacket(&pkt, "idle_anim");
 }
 
 bool actuatorPublishForSideColumn(int btnIdx, bool on) {

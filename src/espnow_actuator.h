@@ -20,5 +20,6 @@ ActuatorCmdPacket espnowActuatorMakeBubblePartyPacket(uint8_t r, uint8_t g, uint
 ActuatorCmdPacket espnowActuatorMakeBubbleKillPacket();
 ActuatorCmdPacket espnowActuatorMakeIdleDmxPacket(uint8_t r, uint8_t g, uint8_t b, uint8_t w, uint8_t amber);
 ActuatorCmdPacket espnowActuatorMakeIdleEndPacket();
+ActuatorCmdPacket espnowActuatorMakeRgbHoldPacket(uint8_t r, uint8_t g, uint8_t b, uint8_t w, uint8_t amber);
 
 #endif

@@ -109,6 +109,11 @@ void motorOutputSetColor(ActuatorColor color, bool on) {
   drivePair(m->in1, m->in2, on);
 }
 
+void motorOutputAllOff() {
+  for (const MotorPair &m : kMotors)
+    drivePair(m.in1, m.in2, false);
+}
+
 bool motorOutputStbyEnabled() { return s_stbyEnabled; }
 
 int motorOutputStbyLevel() { return stbyReadback(); }
