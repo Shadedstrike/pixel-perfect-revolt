@@ -1882,7 +1882,7 @@ void lcdRetroMenu(int selectedIdx, const RhythmSongRow *rows, int numRows, uint3
     lcd.setCursor(0, 1);
     lcd.print("ADD FILES & RESCAN");
     lcd.setCursor(0, 2);
-    lcd.print("38+39 1.5S=ENTER ");
+    lcd.print("38+39 10S=ENTER   ");
     lcd.setCursor(0, 3);
     lcd.print("38+39 3s/4s EXIT   ");
     return;

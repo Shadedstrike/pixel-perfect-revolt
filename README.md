@@ -217,7 +217,7 @@ Override in `[env:esp32-s3-devkitc-1]` `build_flags` if using T-ETH-Lite pins.
 
 | Constant | Default | What it changes |
 |----------|---------|-----------------|
-| `RG_ENTER_HOLD_MS` | 1500 | GPIO 38+39 hold → enter rhythm mode |
+| `RG_ENTER_HOLD_MS` | 10000 | Both yellow (GPIO 38+39) held → enter rhythm mode |
 | `RG_EXIT_HOLD_MENU_MS` | 3000 | Bottom pair hold → song menu |
 | `RG_EXIT_HOLD_IDLE_MS` | 4000 | Bottom pair hold → exit to synth idle |
 | `RG_UI_IDLE_TO_SYNTH_MS` | 25000 | Menu/results AFK → synth idle |

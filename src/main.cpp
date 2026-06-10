@@ -10,7 +10,7 @@
 //  - if any LEFT buttons down: 16 = up, 46 = down (left voice).
 //  - if any RIGHT buttons down: 46 = up, 16 = down (right voice).
 // Hold 16+46 together → cycle scale.
-// Idle LED/LCD mode advances automatically every 2 min when unused; hold GPIO 38+39 ≥1.5s → rhythm game.
+// Idle LED/LCD mode advances automatically every 2 min when unused; hold both yellow (GPIO 38+39) ≥10s → rhythm game.
 // LCD shows scale, note names & offsets live.
 //
 // LED logic kept: solid while held, 1s tails, centers mirror mixes, idle modes (BREATHE, FLAME_WARM, FLAME_COOL, FLAME_RGB).

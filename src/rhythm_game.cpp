@@ -232,8 +232,8 @@ static void rhythmReloadSongList() {
   Serial.printf("[RHYTHM] Loaded %d song(s) from /rhythm (by D then title)\n", s_numSongs);
 }
 
-static const uint32_t RG_ENTER_HOLD_MS = 1500;
-// Bottom pair (GPIO 38 + 39): 3s → song menu, 4s total → main idle (all rhythm phases).
+static const uint32_t RG_ENTER_HOLD_MS = 10000;
+// Yellow pair (GPIO 38 + 39, top of each column): 3s → song menu, 4s total → main idle (all rhythm phases).
 static const uint32_t RG_EXIT_HOLD_MENU_MS = 3000;
 static const uint32_t RG_EXIT_HOLD_IDLE_MS = 4000;
 // Cap beat scoring / LED ring work per frame so fast BPM + many taps cannot wedge loopTask.
@@ -286,14 +286,14 @@ static bool edgeOnRightColumn(const bool *edgeDown) {
   return false;
 }
 
-// Enter / exit rhythm: GPIO 38 (left bottom) + GPIO 39 (right bottom), held together.
-static bool rhythmBottomPairHold(const bool *down) { return down[IDX_38] && down[IDX_11]; }
+// Enter / exit rhythm: both yellow keys (GPIO 38 left top + GPIO 39 right top), held together.
+static bool rhythmYellowPairHold(const bool *down) { return down[IDX_38] && down[IDX_11]; }
 
-static bool rhythmEnterHold(const bool *down) { return rhythmBottomPairHold(down); }
+static bool rhythmEnterHold(const bool *down) { return rhythmYellowPairHold(down); }
 
 // Returns true when phase changed (caller should return from rhythmGameLoop).
 static bool rhythmProcessBottomExitHold(uint32_t now, const bool *down) {
-  if (!rhythmBottomPairHold(down)) {
+  if (!rhythmYellowPairHold(down)) {
     s_exitHoldStart = 0;
     s_exitMenuLatched = false;
     return false;
@@ -1095,7 +1095,7 @@ void rhythmGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
         s_eightHoldStart = 0;
         s_menuIdx = 0;
         s_rhythmUiLastMs = now;
-        Serial.println("[RHYTHM] Enter retro mode (GPIO38+GPIO39 held >=1.5s)");
+        Serial.println("[RHYTHM] Enter retro mode (both yellow held >=10s)");
       }
     } else
       s_eightHoldStart = 0;
@@ -1152,7 +1152,7 @@ void rhythmGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
 
   if (s_phase == RG_PLAYING) {
     // 16+46: hold 3s to pause; while paused, hold 3s again to resume (release between toggles).
-    if (!rhythmBottomPairHold(down) && down[IDX_FRONT_L] && down[IDX_FRONT_R]) {
+    if (!rhythmYellowPairHold(down) && down[IDX_FRONT_L] && down[IDX_FRONT_R]) {
       if (s_pauseHoldStart == 0)
         s_pauseHoldStart = now;
       else if (now - s_pauseHoldStart >= RG_PAUSE_HOLD_MS) {
@@ -1448,7 +1448,7 @@ void rhythmGameGetFrontPlayingLeds(uint32_t now, uint8_t &rL, uint8_t &gL, uint8
 }
 
 static bool rhythmPlayAssistActive(const bool *down) {
-  if (rhythmBottomPairHold(down))
+  if (rhythmYellowPairHold(down))
     return false;
   if (down[IDX_FRONT_L] && down[IDX_FRONT_R])
     return false;
@@ -1622,7 +1622,7 @@ static void rhythmUpdateHoldMeltdown(uint32_t now, const bool *down) {
   }
   if (s_playPaused || s_resumeCountdown || s_playingAfkPrompt)
     return;
-  if (rhythmBottomPairHold(down))
+  if (rhythmYellowPairHold(down))
     return;
   if (down[IDX_FRONT_L] && down[IDX_FRONT_R])
     return;
