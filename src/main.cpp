@@ -10,7 +10,7 @@
 //  - if any LEFT buttons down: 16 = up, 46 = down (left voice).
 //  - if any RIGHT buttons down: 46 = up, 16 = down (right voice).
 // Hold 16+46 together → cycle scale.
-// Idle LED/LCD mode advances automatically every 2 min when unused; hold both yellow (GPIO 38+39) ≥10s → rhythm game.
+// Idle LED/LCD mode advances automatically every 2 min when unused; hold all buttons ≥10s → rhythm game; both yellow ≥5s → pattern mode.
 // LCD shows scale, note names & offsets live.
 //
 // LED logic kept: solid while held, 1s tails, centers mirror mixes, idle modes (BREATHE, FLAME_WARM, FLAME_COOL, FLAME_RGB).
@@ -30,6 +30,7 @@
 #include "actuator_config.h"
 #include "serial_status.h"
 #include "rhythm_game.h"
+#include "pattern_mode.h"
 
 // All config definitions are now in config.cpp
 
@@ -270,6 +271,7 @@ void loop(){
   if (rhythmGameOwnsAudioOutput())
     rhythmGameAudioPump();
   rhythmGameLoop(now, down, edgeDownArr);
+  patternModeLoop(now, down, edgeDownArr);
   for (int i = 0; i < 10; i++) {
     if (edgeDownArr[i])
       rhythmGameOnButtonEdge(now);
@@ -285,7 +287,7 @@ void loop(){
   float wantL = 0, wantR = 0;
   bool fronts = down[IDX_FRONT_L] && down[IDX_FRONT_R];
 
-  if (!rhythmGameSuppressNormalUi()) {
+  if (!rhythmGameSuppressNormalUi() && !patternModeSuppressNormalUi()) {
   // ---- SCALES: hold both front (16+46) for 1.5 seconds to switch scale
   
   // Initialize bothHoldStart when both buttons are first pressed
@@ -396,7 +398,7 @@ void loop(){
   // The pitch naturally rises/falls as leftDegOff/rightDegOff change continuously
   // No need for separate tone - the continuous shifting creates the effect
   
-  if (rhythmGameShouldSilenceSynth()) {
+  if (rhythmGameShouldSilenceSynth() || patternModeShouldSilenceSynth()) {
     wantL = 0;
     wantR = 0;
   }
@@ -426,11 +428,11 @@ void loop(){
 
   // Idle mode (used by LCD + LED when not in rhythm UI)
   bool idle = (!anyDown) && (now - lastPressMs > IDLE_AFTER_MS);
-  actuatorLinkSyncDmxRgb(down, now, idle && !rhythmGameIsActive());
+  actuatorLinkSyncDmxRgb(down, now, idle && !rhythmGameIsActive() && !patternModeIsActive());
 
   // Auto-advance idle LED/LCD mode every 2 minutes while unused (no rhythm UI).
   static uint32_t nextIdleAutoAdvanceMs = 0;
-  if (!idle || rhythmGameIsActive()) {
+  if (!idle || rhythmGameIsActive() || patternModeIsActive()) {
     nextIdleAutoAdvanceMs = 0;
   } else if (nextIdleAutoAdvanceMs == 0) {
     nextIdleAutoAdvanceMs = now + 120000u;
@@ -477,7 +479,7 @@ void loop(){
       // Check if idle duration was >= 25 seconds
       if(idleStartTime > 0){
         uint32_t idleDuration = now - idleStartTime;
-        if(idleDuration >= 25000 && !rhythmGameIsActive()){ // synth idle only — not rhythm menu/results
+        if(idleDuration >= 25000 && !rhythmGameIsActive() && !patternModeIsActive()){ // synth idle only — not rhythm/pattern UI
           lcdWelcomeAnimationBeginSession();
           welcomeAnimTriggered = true;
           Serial.printf("[LCD] Triggering welcome animation (idle was %d ms)\n", idleDuration);
@@ -547,18 +549,22 @@ void loop(){
   uint32_t lcdPollMs = idle ? 100 : 500;
   if (rhythmGameIsActive())
     lcdPollMs = 50;
+  if (patternModeIsActive())
+    lcdPollMs = 80;
   if (now - lastLCD > lcdPollMs) {
     if (rhythmGameDrawLcd(now)) {
       lastLCD = now;
       // I2C LCD writes block for ms — refill MP3 ring immediately after.
       if (rhythmGameOwnsAudioOutput())
         rhythmGameAudioPumpN(3);
-    } else if (!rhythmGameIsActive() && showScaleSelection){
+    } else if (patternModeDrawLcd(now)) {
+      lastLCD = now;
+    } else if (!rhythmGameIsActive() && !patternModeIsActive() && showScaleSelection){
       // Show scale selection display
       lcdPrintScaleSelection(scaleIndex, now);
-    } else if(!rhythmGameIsActive() && showWaveSelection){
+    } else if(!rhythmGameIsActive() && !patternModeIsActive() && showWaveSelection){
       lcdPrintWaveShapePreview(audioGetWaveShape());
-    } else if(!rhythmGameIsActive() && showModeName && idle){
+    } else if(!rhythmGameIsActive() && !patternModeIsActive() && showModeName && idle){
       // Show mode name for 1 second after mode change (works when idle or cycling)
       const char* modeNames[] = {"RGB Breathe", "Warm Flame", "Cool Flame", "RGB+Flame", "Solid Colors", 
                                   "Rainbow Wave", "Aurora", "Starlight", "Gradient Flow", "Matrix Rain",
@@ -573,7 +579,7 @@ void loop(){
       snprintf(modeStr, sizeof(modeStr), "Mode %d/11", displayedMode);
       lcd.setCursor(0, 3);
       lcd.print(modeStr);
-    } else if(!rhythmGameIsActive() && idle && lcdAnimationMode > 0){
+    } else if(!rhythmGameIsActive() && !patternModeIsActive() && idle && lcdAnimationMode > 0){
       // Randomly select LCD animation (includes glitch text + new animations)
       static uint32_t lastAnimationSwitch = 0;
       static uint8_t currentLCDAnim = 0;
@@ -631,7 +637,7 @@ void loop(){
           lcdGlitchTextAnimation(now, currentIdleStartTime);
           break;
       }
-    } else if (!rhythmGameIsActive()) {
+    } else if (!rhythmGameIsActive() && !patternModeIsActive()) {
       // Show welcome animation if triggered, otherwise show normal status
       if(welcomeAnimTriggered){
         lcdWelcomeAnimation(now, lastPressMs);
@@ -729,6 +735,8 @@ void loop(){
       }
       setLED_RGB(i, r, g, b);
     }
+  } else if (patternModeIsActive()) {
+    patternModeApplyLeds(now, down);
   } else {
   // flame stepping for idle flame modes (also when cycling modes)
   // Only show idle modes if truly idle (no buttons pressed) OR cycling modes (but not if buttons pressed)
@@ -1226,7 +1234,7 @@ void loop(){
 
   } // !rhythmGameIsActive() (LED strip)
 
-  actuatorLinkUpdateIdle(idle && !rhythmGameIsActive(), now, 0, 0, 0);
+  actuatorLinkUpdateIdle(idle && !rhythmGameIsActive() && !patternModeIsActive(), now, 0, 0, 0);
 
   // ========= Audio render =========
   if (rhythmGameOwnsAudioOutput())

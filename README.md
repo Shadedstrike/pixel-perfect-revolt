@@ -217,7 +217,7 @@ Override in `[env:esp32-s3-devkitc-1]` `build_flags` if using T-ETH-Lite pins.
 
 | Constant | Default | What it changes |
 |----------|---------|-----------------|
-| `RG_ENTER_HOLD_MS` | 10000 | Both yellow (GPIO 38+39) held → enter rhythm mode |
+| `RG_ENTER_HOLD_MS` | 10000 | All 10 buttons held → enter rhythm mode |
 | `RG_EXIT_HOLD_MENU_MS` | 3000 | Bottom pair hold → song menu |
 | `RG_EXIT_HOLD_IDLE_MS` | 4000 | Bottom pair hold → exit to synth idle |
 | `RG_UI_IDLE_TO_SYNTH_MS` | 25000 | Menu/results AFK → synth idle |
@@ -226,6 +226,24 @@ Override in `[env:esp32-s3-devkitc-1]` `build_flags` if using T-ETH-Lite pins.
 | `RG_AFK_FADE_OUT_MS` | 3000 | Fade music before leaving play |
 | `RG_PAUSE_HOLD_MS` | 3000 | Pause/resume toggle hold |
 | `kLiveFeedbackWindowMs` | 4000 | Rolling score window for live % |
+
+---
+
+### Pattern mode (`src/pattern_mode.cpp`)
+
+Simon-style sequence game on the 8 side buttons (not front 16/46).
+
+| Gesture / constant | Default | What it does |
+|--------------------|---------|--------------|
+| Both yellow (GPIO 38+39) held 5 s | — | Enter **Pattern mode** (LCD says "Pattern mode", not Simon) |
+| Both yellow held 5 s again | — | Exit pattern mode (must release yellows once after enter before exit arms) |
+| All 10 buttons held 10 s | — | Enter rhythm mode (blocked while pattern active) |
+| `PAT_ENTER_HOLD_MS` | 5000 | Yellow-pair enter hold |
+| `PAT_EXIT_HOLD_MS` | 5000 | Yellow-pair exit hold |
+| `IDLE_AFTER_MS` (from `leds.cpp`) | 10000 | No input during **your turn** → exit to synth |
+| `kMaxPatternLen` | 24 | Max steps per round; flash speed floors at ~260 ms |
+
+Each cleared round adds one step and speeds up the flash. Wrong press shows `Correct: X/Y` then returns to synth after ~2 s.
 
 ---
 

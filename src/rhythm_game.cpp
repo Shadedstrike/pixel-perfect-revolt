@@ -2,6 +2,7 @@
 #include "config.h"
 #include "display.h"
 #include "leds.h"
+#include "pattern_mode.h"
 #include "rhythm_mp3.h"
 #include <ctype.h>
 #if defined(ARDUINO_ARCH_ESP32)
@@ -286,10 +287,16 @@ static bool edgeOnRightColumn(const bool *edgeDown) {
   return false;
 }
 
-// Enter / exit rhythm: both yellow keys (GPIO 38 left top + GPIO 39 right top), held together.
+// Exit rhythm: both yellow keys (GPIO 38 left top + GPIO 39 right top), held together.
 static bool rhythmYellowPairHold(const bool *down) { return down[IDX_38] && down[IDX_11]; }
 
-static bool rhythmEnterHold(const bool *down) { return rhythmYellowPairHold(down); }
+static bool rhythmAllButtonsHold(const bool *down) {
+  for (int i = 0; i < 10; i++) {
+    if (!down[i])
+      return false;
+  }
+  return true;
+}
 
 // Returns true when phase changed (caller should return from rhythmGameLoop).
 static bool rhythmProcessBottomExitHold(uint32_t now, const bool *down) {
@@ -1084,9 +1091,11 @@ static bool rhythmScoreNearestDisplayBeat(uint32_t rel, uint32_t now, bool requi
 static void rhythmUpdateHoldMeltdown(uint32_t now, const bool *down);
 
 void rhythmGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
+  if (patternModeIsActive())
+    return;
 
   if (s_phase == RG_NORMAL) {
-    if (rhythmEnterHold(down)) {
+    if (rhythmAllButtonsHold(down)) {
       if (s_eightHoldStart == 0)
         s_eightHoldStart = now;
       else if (now - s_eightHoldStart >= RG_ENTER_HOLD_MS) {
@@ -1095,7 +1104,7 @@ void rhythmGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
         s_eightHoldStart = 0;
         s_menuIdx = 0;
         s_rhythmUiLastMs = now;
-        Serial.println("[RHYTHM] Enter retro mode (both yellow held >=10s)");
+        Serial.println("[RHYTHM] Enter retro mode (all buttons held >=10s)");
       }
     } else
       s_eightHoldStart = 0;

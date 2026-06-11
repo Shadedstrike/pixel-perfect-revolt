@@ -2726,3 +2726,20 @@ void lcdRetroResultsPrompt(uint32_t wallMs, const char *nextSongTitle) {
   lcd.print("16=BACK TO MENU     ");
 }
 
+void lcdPatternModeScreen(const char *status, int level, int correctCount, int patternLen, int roundsCompleted) {
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Pattern mode");
+  lcd.setCursor(0, 1);
+  lcd.printf("Level: %d", level);
+  lcd.setCursor(0, 2);
+  if (patternLen > 0)
+    lcd.printf("Correct: %d/%d", correctCount, patternLen);
+  else
+    lcd.printf("Correct: %d", correctCount);
+  lcd.setCursor(0, 3);
+  lcd.print(status);
+  (void)roundsCompleted;
+}
+
