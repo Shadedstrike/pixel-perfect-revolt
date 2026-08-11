@@ -45,6 +45,16 @@ void audioCycleWaveShape() {
   s_waveShape = (AudioWaveShape)n;
 }
 
+// Step by +1 / -1 with wraparound — the wave/scale select menu needs to walk
+// backwards, which audioCycleWaveShape() alone cannot do.
+void audioStepWaveShape(int delta) {
+  const int n = (int)AUDIO_WAVE_COUNT;
+  int v = ((int)s_waveShape + delta) % n;
+  if (v < 0)
+    v += n;
+  s_waveShape = (AudioWaveShape)v;
+}
+
 AudioWaveShape audioGetWaveShape() { return s_waveShape; }
 
 const char *audioWaveShapeName(AudioWaveShape w) {

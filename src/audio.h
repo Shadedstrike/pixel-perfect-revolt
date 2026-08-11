@@ -40,6 +40,8 @@ typedef enum : uint8_t {
 } AudioWaveShape;
 
 void audioCycleWaveShape();
+// Step +1 / -1 with wraparound (select menu).
+void audioStepWaveShape(int delta);
 AudioWaveShape audioGetWaveShape();
 const char *audioWaveShapeName(AudioWaveShape w);
 // Sample main-console waveform at phase [0, 2pi) for a given shape (LCD preview, etc.).

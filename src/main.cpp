@@ -340,7 +340,7 @@ static uint32_t s_voiceCountdownHeldMs = 0;
 // made: the panel keeps showing the current value and a fresh tap of the same pair
 // steps to the next. Without this the display flashed for one frame and reverted,
 // which reads as "entered the mode then immediately exited".
-static const uint32_t VOICE_SELECT_MS = 5000;
+static const uint32_t VOICE_SELECT_MS = 6000;
 static uint8_t  s_voiceSelectKind = 0;      // 0 none, 1 wave, 2 scale
 static uint32_t s_voiceSelectUntil = 0;
 
@@ -471,19 +471,10 @@ void loop(){
   if (greens) {
     if (greenHoldStart == 0)
       greenHoldStart = now;
-    if (s_voiceSelectKind == 1 && greensEdge) {
-      // Already selecting: tap steps to the next wave, no re-hold.
-      audioCycleWaveShape();
-      greenLatched = true;
-      s_voiceSelectUntil = now + VOICE_SELECT_MS;
-      waveDisplayStart = now;
-      Serial.printf("[WAVE] %s\n", audioWaveShapeName(audioGetWaveShape()));
-      lastLCD = 0;
-    } else if (!greenLatched && s_voiceSelectKind != 1) {
+    if (s_voiceSelectKind != 1 && !greenLatched) {
       s_voiceCountdownHeldMs = now - greenHoldStart;
       s_voiceCountdownKind = 1;
       if ((now - greenHoldStart) >= VOICE_HOLD_MS) {
-        audioCycleWaveShape();
         greenLatched = true;
         s_voiceCountdownKind = 0;
         s_voiceSelectKind = 1;
@@ -501,19 +492,10 @@ void loop(){
   if (reds) {
     if (redHoldStart == 0)
       redHoldStart = now;
-    if (s_voiceSelectKind == 2 && redsEdge) {
-      scaleIndex = (scaleIndex + 1) % NUM_SCALES;
-      buildScaleHz();
-      redLatched = true;
-      s_voiceSelectUntil = now + VOICE_SELECT_MS;
-      Serial.printf("[SCALE] Changed to: %s\n", SCALES[scaleIndex].name);
-      lastLCD = 0;
-    } else if (!redLatched && s_voiceSelectKind != 2) {
+    if (s_voiceSelectKind != 2 && !redLatched) {
       s_voiceCountdownHeldMs = now - redHoldStart;
       s_voiceCountdownKind = 2;
       if ((now - redHoldStart) >= VOICE_HOLD_MS) {
-        scaleIndex = (scaleIndex + 1) % NUM_SCALES;
-        buildScaleHz();
         redLatched = true;
         s_voiceCountdownKind = 0;
         s_voiceSelectKind = 2;
@@ -525,6 +507,45 @@ void loop(){
   } else {
     redHoldStart = 0;
     redLatched = false;
+  }
+
+  // ---- Wave / scale select menu navigation ----
+  // 16 (front L) steps DOWN, 46 (front R) steps UP, any colour key confirms and
+  // exits, otherwise it closes itself after VOICE_SELECT_MS. Edges only, so holding
+  // a front key does not run away through the list.
+  if (s_voiceSelectKind != 0) {
+    int step = 0;
+    if (edgeDownArr[IDX_FRONT_L])
+      step = -1;
+    else if (edgeDownArr[IDX_FRONT_R])
+      step = +1;
+
+    if (step != 0) {
+      if (s_voiceSelectKind == 1) {
+        audioStepWaveShape(step);
+        waveDisplayStart = now;
+        Serial.printf("[WAVE] %s\n", audioWaveShapeName(audioGetWaveShape()));
+      } else {
+        scaleIndex = (uint8_t)(((int)scaleIndex + step + (int)NUM_SCALES) % (int)NUM_SCALES);
+        buildScaleHz();
+        Serial.printf("[SCALE] %s\n", SCALES[scaleIndex].name);
+      }
+      s_voiceSelectUntil = now + VOICE_SELECT_MS;
+      lastLCD = 0;
+    }
+
+    // Any of the 8 colour keys locks the choice in.
+    bool confirm = false;
+    for (int k = 0; k < 4; k++) {
+      if (edgeDownArr[IDX_LEFT[k]] || edgeDownArr[IDX_RIGHT[k]])
+        confirm = true;
+    }
+    if (confirm) {
+      Serial.printf("[VOICE] locked in %s\n",
+                    s_voiceSelectKind == 1 ? audioWaveShapeName(audioGetWaveShape()) : SCALES[scaleIndex].name);
+      s_voiceSelectKind = 0;
+      lastLCD = 0;
+    }
   }
 
   // ---- Which side is active?
