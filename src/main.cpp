@@ -722,8 +722,12 @@ void loop(){
   
   // Rhythm UI throttles inside rhythmGameDrawLcd; do not run LCD branch every loop (was starving MP3 + causing flicker).
   uint32_t lcdPollMs = idle ? 100 : 500;
+  // Play refresh: the screen sits right next to the keys, so lane motion needs to be
+  // smooth. 25ms is a 40fps ceiling; real frame time is bounded by the ~10-20ms it
+  // takes to push 4x20 chars over I2C. If MP3 audio starts stuttering, raise this
+  // first — LCD I2C writes and the decoder compete for the same loop.
   if (rhythmGameIsActive())
-    lcdPollMs = 50;
+    lcdPollMs = 25;
   // Countdown animates — 500ms would make the sprite border look broken.
   if (rhythmGameEnterCountdownActive() || simonGameEnterCountdownActive() || s_voiceCountdownKind != 0)
     lcdPollMs = 60;
@@ -745,9 +749,10 @@ void loop(){
       lastLCD = now;
     } else if (rhythmGameDrawLcd(now)) {
       lastLCD = now;
-      // I2C LCD writes block for ms — refill MP3 ring immediately after.
+      // I2C LCD writes block for ms — refill MP3 ring immediately after. Bumped with
+      // the faster refresh above: twice the LCD traffic needs twice the catch-up.
       if (rhythmGameOwnsAudioOutput())
-        rhythmGameAudioPumpN(3);
+        rhythmGameAudioPumpN(6);
     } else if (!rhythmGameIsActive() && showScaleSelection){
       // Show scale selection display
       lcdPrintScaleSelection(scaleIndex, now);

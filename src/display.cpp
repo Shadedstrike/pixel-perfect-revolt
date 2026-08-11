@@ -2152,6 +2152,21 @@ static void lcdRetroFillNoteLane(char *row, uint32_t scrollPeriodMs, uint32_t so
 }
 
 // Row 3: scrolling sub-beat ticks + fixed strike reticle (cols 8–12).
+// Persistent strike bracket, drawn on the NOTE LANE row itself.
+// The highway row below already had >-+-< markers, but those sit on a different
+// line from the hearts, so a heart never visibly enters anything — players had no
+// fixed thing to aim at between notes. Bracketing the strike cell on the same row
+// is what makes "hit it when the heart is inside" legible.
+// Hearts win the cell if one is passing over a bracket character.
+static void lcdRetroDrawLaneBracket(char *row) {
+  const int l = kHitColC - 1;
+  const int r = kHitColC + 1;
+  if (l >= 0 && row[l] == ' ')
+    row[l] = '[';
+  if (r < 20 && row[r] == ' ')
+    row[r] = ']';
+}
+
 static void lcdRetroFillHighway(char *row, uint32_t scrollPeriodMs, uint32_t songRelMs) {
   const int W    = 20;
   const int kCpp = 9;
@@ -2542,6 +2557,7 @@ void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs,
     lcdRetroPad20(row3, "  HOLD 3s TO RESUME  ");
   } else {
     lcdRetroFillNoteLane(row2, beatPeriodMs, songRelMs, beats, nBeats, wallMs, consumed, nConsumed);
+    lcdRetroDrawLaneBracket(row2); // fixed target on the same row the hearts travel
     lcdRetroFillHighway(row3, beatPeriodMs, songRelMs);
     uint32_t judgeAge = 0;
     LcdJudgeFlash judgeKind = lcdRetroJudgeFlashKind(wallMs, lastHitWallMs, lastMissWallMs, &judgeAge);
