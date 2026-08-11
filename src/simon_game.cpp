@@ -1,6 +1,8 @@
 #include "simon_game.h"
 
 #include "actuator_link.h"
+#include "actuator_protocol.h"
+#include "espnow_actuator.h"
 #include "config.h"
 #include "display.h"
 #include "leds.h"
@@ -25,8 +27,28 @@ static const int      SIMON_SEQ_MAX       = 32;
 // grows quadratically and an unbounded game would let one player hold the piece for
 // ten minutes with a queue behind them. Tune on-site once you have watched a few.
 static const int      SIMON_MAX_LEVEL     = 12;
-static const uint32_t SIMON_WIN_MS        = 7000;
-static const uint32_t SIMON_WIN_CHASE_MS  = 170;
+// Win celebration runs in two stages:
+//   1. FLOURISH — rainbow LED chase + colour chase on the actuator.
+//   2. SEQUENCE — per colour: solenoid+relay on, pause, then the pump pulses.
+// Pump phases alternate starting ON, so 3 pulses = on/off/on/off/on = 5 phases.
+static const uint32_t SIMON_WIN_FLOURISH_MS      = 7000;
+static const uint32_t SIMON_WIN_CHASE_MS         = 170;
+static const uint32_t SIMON_WIN_SOLENOID_LEAD_MS = 500;
+static const uint32_t SIMON_WIN_PUMP_PHASE_MS    = 1000;
+static const int      SIMON_WIN_PUMP_ON_PULSES   = 3;
+static const int      SIMON_WIN_PUMP_PHASES      = SIMON_WIN_PUMP_ON_PULSES * 2 - 1;
+static const uint32_t SIMON_WIN_FADE_MS          = 1500;
+// Colour order. Blue has no solenoid (suppressed on the actuator) and no motor, so
+// it lands as relay-only, which is what was asked for.
+static const ActuatorColor kSimonWinOrder[] = {
+    ACTUATOR_COLOR_YELLOW, ACTUATOR_COLOR_RED, ACTUATOR_COLOR_GREEN,
+    ACTUATOR_COLOR_BLUE,   ACTUATOR_COLOR_YELLOW,
+};
+static const int SIMON_WIN_COLOURS = (int)(sizeof(kSimonWinOrder) / sizeof(kSimonWinOrder[0]));
+static const uint32_t SIMON_WIN_COLOUR_MS =
+    SIMON_WIN_SOLENOID_LEAD_MS + (uint32_t)SIMON_WIN_PUMP_PHASES * SIMON_WIN_PUMP_PHASE_MS;
+static const uint32_t SIMON_WIN_SEQ_MS = (uint32_t)SIMON_WIN_COLOURS * SIMON_WIN_COLOUR_MS;
+static const uint32_t SIMON_WIN_MS = SIMON_WIN_FLOURISH_MS + SIMON_WIN_SEQ_MS + SIMON_WIN_FADE_MS;
 
 enum SimonPhase : uint8_t {
   SIMON_OFF = 0,
@@ -53,7 +75,9 @@ static uint32_t s_enterHeldMs = 0;
 static uint32_t s_quitHoldStart = 0;
 static int      s_litKey = -1;   // button index currently lit, -1 = none
 static int      s_wrongKey = -1;
-static int      s_winSlot = -1;   // colour slot lit by the win flourish
+static int      s_winColourIdx = -1;  // index into kSimonWinOrder
+static int      s_winPumpPhase = -1;  // -1 = lead-in, else 0..PHASES-1
+static int      s_winChaseSlot = -1;  // colour slot lit during the flourish
 
 // -------------------------------------------------------------- key pool ----
 // Index into the pool -> button index. 0-3 left, 4-7 right, 8-9 fronts.
@@ -124,6 +148,13 @@ static void simonActuator(int btnIdx, bool on) {
     actuatorPublishForSideColumn(btnIdx, on);
 }
 
+// Independent solenoid / motor / relay control — a plain colour command fires all
+// three at once, which cannot express "solenoid, pause, then pump".
+static void simonDirect(ActuatorColor c, uint8_t mask, bool on) {
+  const ActuatorCmdPacket pkt = espnowActuatorMakeDirectPacket(c, mask, on);
+  espnowActuatorSend(&pkt);
+}
+
 static void simonAllActuatorsOff() {
   for (int k = 0; k < 4; k++) {
     actuatorPublishForSideColumn(IDX_LEFT[k], false);
@@ -154,7 +185,9 @@ static void simonStart(uint32_t now) {
   s_seqLen = 0;
   s_round = 0;
   s_wrongKey = -1;
-  s_winSlot = -1;
+  s_winColourIdx = -1;
+  s_winPumpPhase = -1;
+  s_winChaseSlot = -1;
   s_phase = SIMON_INTRO;
   s_phaseStartMs = now;
   s_enterHoldStart = 0;
@@ -168,7 +201,9 @@ static void simonStop(uint32_t now, const char *why) {
   simonAllActuatorsOff();
   s_phase = SIMON_OFF;
   s_litKey = -1;
-  s_winSlot = -1;
+  s_winColourIdx = -1;
+  s_winPumpPhase = -1;
+  s_winChaseSlot = -1;
   s_enterHoldStart = 0;
   s_enterHeldMs = 0;
   s_quitHoldStart = 0;
@@ -290,19 +325,60 @@ void simonGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
       break;
 
     case SIMON_WIN: {
-      // Actuator flourish: chase the four colours so the machine celebrates too.
-      const int step = (int)((now - s_phaseStartMs) / SIMON_WIN_CHASE_MS);
-      const int slot = step % 4;
-      if (slot != s_winSlot) {
-        if (s_winSlot >= 0) {
-          actuatorPublishForSideColumn(IDX_LEFT[s_winSlot], false);
-          actuatorPublishForSideColumn(IDX_RIGHT[s_winSlot], false);
+      const uint32_t t = now - s_phaseStartMs;
+
+      if (t < SIMON_WIN_FLOURISH_MS) {
+        // Stage 1 — colour chase, all three outputs together (plain colour cmd).
+        const int slot = (int)(t / SIMON_WIN_CHASE_MS) % 4;
+        if (slot != s_winChaseSlot) {
+          if (s_winChaseSlot >= 0) {
+            actuatorPublishForSideColumn(IDX_LEFT[s_winChaseSlot], false);
+            actuatorPublishForSideColumn(IDX_RIGHT[s_winChaseSlot], false);
+          }
+          s_winChaseSlot = slot;
+          actuatorPublishForSideColumn(IDX_LEFT[slot], true);
+          actuatorPublishForSideColumn(IDX_RIGHT[slot], true);
         }
-        s_winSlot = slot;
-        actuatorPublishForSideColumn(IDX_LEFT[slot], true);
-        actuatorPublishForSideColumn(IDX_RIGHT[slot], true);
+      } else if (t < SIMON_WIN_FLOURISH_MS + SIMON_WIN_SEQ_MS) {
+        // Stage 2 — scripted solenoid/pump run.
+        if (s_winChaseSlot >= 0) { // close out the flourish exactly once
+          simonAllActuatorsOff();
+          s_winChaseSlot = -1;
+        }
+        const uint32_t st = t - SIMON_WIN_FLOURISH_MS;
+        const int colourIdx = (int)(st / SIMON_WIN_COLOUR_MS);
+        const ActuatorColor c = kSimonWinOrder[colourIdx];
+        const uint32_t within = st - (uint32_t)colourIdx * SIMON_WIN_COLOUR_MS;
+
+        if (colourIdx != s_winColourIdx) {
+          if (s_winColourIdx >= 0) {
+            const ActuatorColor prev = kSimonWinOrder[s_winColourIdx];
+            simonDirect(prev, ACTUATOR_TARGET_SOLENOID | ACTUATOR_TARGET_MOTOR | ACTUATOR_TARGET_RELAY, false);
+          }
+          s_winColourIdx = colourIdx;
+          s_winPumpPhase = -1;
+          simonDirect(c, ACTUATOR_TARGET_SOLENOID | ACTUATOR_TARGET_RELAY, true);
+        }
+
+        if (within >= SIMON_WIN_SOLENOID_LEAD_MS) {
+          const int phase = (int)((within - SIMON_WIN_SOLENOID_LEAD_MS) / SIMON_WIN_PUMP_PHASE_MS);
+          if (phase < SIMON_WIN_PUMP_PHASES && phase != s_winPumpPhase) {
+            s_winPumpPhase = phase;
+            simonDirect(c, ACTUATOR_TARGET_MOTOR, (phase % 2) == 0); // on/off/on/off/on
+          }
+        }
+      } else if (s_winColourIdx >= 0 || s_winChaseSlot >= 0) {
+        // Stage 3 — fade. Everything off; LEDs ramp down in the renderer.
+        simonAllActuatorsOff();
+        if (s_winColourIdx >= 0)
+          simonDirect(kSimonWinOrder[s_winColourIdx],
+                      ACTUATOR_TARGET_SOLENOID | ACTUATOR_TARGET_MOTOR | ACTUATOR_TARGET_RELAY, false);
+        s_winColourIdx = -1;
+        s_winPumpPhase = -1;
+        s_winChaseSlot = -1;
       }
-      if (now - s_phaseStartMs >= SIMON_WIN_MS)
+
+      if (t >= SIMON_WIN_MS)
         simonStop(now, "win");
       break;
     }
@@ -365,10 +441,17 @@ void simonGameRenderLeds(uint32_t now) {
   if (s_phase == SIMON_WIN) {
     // Rainbow chase across all ten.
     const uint32_t t = now - s_phaseStartMs;
+    // Ramp brightness down through the trailing fade window.
+    float v = 1.0f;
+    const uint32_t fadeFrom = SIMON_WIN_MS - SIMON_WIN_FADE_MS;
+    if (t > fadeFrom) {
+      const float k = (float)(t - fadeFrom) / (float)SIMON_WIN_FADE_MS;
+      v = 1.0f - (k > 1.0f ? 1.0f : k);
+    }
     for (int i = 0; i < 10; i++) {
       const float hue = fmodf((float)t * 0.28f + (float)i * 36.f, 360.f);
       uint8_t rr = 0, gg = 0, bb = 0;
-      hsv2rgb(hue, 1.0f, 1.0f, rr, gg, bb); // writes 0-255 directly
+      hsv2rgb(hue, 1.0f, v, rr, gg, bb);
       setLED_RGB(i, rr, gg, bb);
     }
     return;
