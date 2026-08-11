@@ -1970,7 +1970,18 @@ static const uint8_t kHeartSubR[8] = { // shifted 1px right (bits 2-0)
 };
 static const char kBeatSubChars[3] = {'\x01', '\x02', '\x03'};
 
+// Cached. This is called every frame from the play renderer, and each call pushed
+// 5 x 8 bytes of CGRAM over I2C — 40 bytes per frame, blocking the MP3 decoder for
+// no reason since the glyphs never change while playing. That was the bulk of the
+// audio lag, and adding the three sub-position hearts had made it 2.5x worse.
+static bool s_playGlyphsLoaded = false;
+
+void lcdRetroPlayLaneGlyphsInvalidate(void) { s_playGlyphsLoaded = false; }
+
 static void lcdRetroDefinePlayLaneGlyphs(void) {
+  if (s_playGlyphsLoaded)
+    return;
+  s_playGlyphsLoaded = true;
   lcdWriteCgramGlyph(1, kHeartSubL);
   lcdWriteCgramGlyph(2, kHeartSubC);
   lcdWriteCgramGlyph(3, kHeartSubR);
@@ -2314,6 +2325,10 @@ void lcdRetroResumeCountdown(uint32_t now, uint32_t startMs, uint32_t countEachM
 }
 
 static uint32_t s_playLastElapsedMs = 0xffffffffu;
+// Called between LCD row writes so audio decode is not blocked for a whole panel.
+static void (*s_lcdInterRowCb)(void) = nullptr;
+void lcdSetInterRowCallback(void (*cb)(void)) { s_lcdInterRowCb = cb; }
+
 static char s_playLastRow0[21];
 static char s_playLastRow1[21];
 static char s_playLastRow2[21];
@@ -2630,11 +2645,16 @@ void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs,
       lcd.write((uint8_t)fresh[i]);
     memcpy(last, fresh, 21);
   };
+  // Feed the decoder between rows, not just after the whole panel. A 4x20 refresh
+  // blocks for 10-20ms in one stretch; interleaving keeps the MP3 ring topped up.
   deltaWriteRow(0, row0, s_playLastRow0);
+  if (s_lcdInterRowCb) s_lcdInterRowCb();
   deltaWriteRow(1, row1, s_playLastRow1);
+  if (s_lcdInterRowCb) s_lcdInterRowCb();
   if (!paused)
     lcdRetroDefinePlayLaneGlyphs();
   printBeatRow(2, row2, s_playLastRow2);
+  if (s_lcdInterRowCb) s_lcdInterRowCb();
   printBeatRow(3, row3, s_playLastRow3);
 }
 
@@ -2808,6 +2828,7 @@ static void lcdRetroDefineEnterGlyphs(void) {
   lcdWriteCgramGlyph(2, kEnterSprite2);
   lcdWriteCgramGlyph(3, kEnterSprite3);
   s_enterGlyphsLoaded = true;
+  lcdRetroPlayLaneGlyphsInvalidate(); // this panel claims 1-3 too
 }
 
 void lcdRetroEnterCountdownInvalidate(void) { s_enterGlyphsLoaded = false; }
@@ -2914,6 +2935,7 @@ static void lcdSimonDefineGlyphs(void) {
   s_simonGlyphsLoaded = true;
   // The hold-countdown screen shares slots 0-3, so make it reload its own next time.
   lcdRetroEnterCountdownInvalidate();
+  lcdRetroPlayLaneGlyphsInvalidate();
 }
 
 void lcdSimonInvalidate(void) { s_simonGlyphsLoaded = false; }

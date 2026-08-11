@@ -234,6 +234,8 @@ void setup(){
   // Last: input sampling moves to its own task so LCD/MP3 stalls in loop() cannot
   // delay a button press reaching the relay.
   inputFastPollStartTask();
+  // Audio outranks the display: keep the MP3 ring fed between LCD row writes.
+  lcdSetInterRowCallback(rhythmGameAudioPump);
 }
 
 // ===================== Fast input path =====================
@@ -783,7 +785,7 @@ void loop(){
   // at kCpp=9 a note crosses ~9 cells per beat, so past ~15fps extra frames just
   // redraw the same cells. 40ms buys back decode headroom and costs nothing visible.
   if (rhythmGameIsActive())
-    lcdPollMs = 40;
+    lcdPollMs = 33;
   // Countdown animates — 500ms would make the sprite border look broken.
   if (rhythmGameEnterCountdownActive() || simonGameEnterCountdownActive() || s_voiceCountdownKind != 0 ||
       s_voiceSelectKind != 0)

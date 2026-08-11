@@ -45,6 +45,11 @@ void lcdRetroFlashScreen(uint32_t now, uint32_t flashStartMs);
 uint32_t lcdRetroFlashDurationMs(void);
 void lcdRetroMenu(int selectedIdx, const RhythmSongRow *rows, int numRows, uint32_t wallMs);
 void lcdRetroPlayingInvalidate(void);
+// Drop the cached play-lane CGRAM (slots 1-5) so it reloads on the next frame.
+void lcdRetroPlayLaneGlyphsInvalidate(void);
+// Called between LCD row writes — point this at the MP3 pump so a full-panel
+// refresh cannot block audio decode for 10-20ms in one stretch.
+void lcdSetInterRowCallback(void (*cb)(void));
 void lcdRetroMeltdownBegin(void);
 // 5s hold easter-egg: glitch → matrix hearts → disintegrate → rain wash.
 bool lcdRetroHoldMeltdown(uint32_t now, uint32_t startMs);
