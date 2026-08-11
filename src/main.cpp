@@ -634,8 +634,15 @@ void loop(){
   uint32_t lcdPollMs = idle ? 100 : 500;
   if (rhythmGameIsActive())
     lcdPollMs = 50;
+  // Countdown animates — 500ms would make the sprite border look broken.
+  if (rhythmGameEnterCountdownActive())
+    lcdPollMs = 60;
   if (now - lastLCD > lcdPollMs) {
-    if (rhythmGameDrawLcd(now)) {
+    if (rhythmGameEnterCountdownActive()) {
+      // Takes the whole panel while the 4-key enter gesture is held.
+      lcdRetroEnterCountdown(now, rhythmGameEnterHeldMs(), rhythmGameEnterTotalMs());
+      lastLCD = now;
+    } else if (rhythmGameDrawLcd(now)) {
       lastLCD = now;
       // I2C LCD writes block for ms — refill MP3 ring immediately after.
       if (rhythmGameOwnsAudioOutput())

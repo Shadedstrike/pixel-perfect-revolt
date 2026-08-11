@@ -15,6 +15,12 @@ bool rhythmGameShouldSilenceSynth();
 // When true, skip scale-switch / idle-cycle / normal LCD stack (game draws LCD).
 bool rhythmGameSuppressNormalUi();
 
+// Enter gesture (all four top keys) is being held — main.cpp gives the LCD over to
+// lcdRetroEnterCountdown() while this is true.
+bool rhythmGameEnterCountdownActive();
+uint32_t rhythmGameEnterHeldMs();
+uint32_t rhythmGameEnterTotalMs();
+
 // Draw retro UI; returns true if game owns the LCD this frame.
 bool rhythmGameDrawLcd(uint32_t now);
 

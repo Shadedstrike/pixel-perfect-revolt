@@ -85,7 +85,11 @@ enum RPhase : uint8_t {
 };
 
 static RPhase s_phase = RG_NORMAL;
+// Name is historic — this is the 4-top-key enter hold, not an eight-key one.
 static uint32_t s_eightHoldStart = 0;
+// How long the enter gesture has been held, 0 when not holding. Drives the LCD
+// countdown so main.cpp can take the screen over without duplicating the timing.
+static uint32_t s_enterHeldMs = 0;
 static uint32_t s_flashStartMs = 0;
 static int s_menuIdx = 0;
 static uint32_t s_bothFrontMenuStart = 0;
@@ -233,7 +237,7 @@ static void rhythmReloadSongList() {
   Serial.printf("[RHYTHM] Loaded %d song(s) from /rhythm (by D then title)\n", s_numSongs);
 }
 
-static const uint32_t RG_ENTER_HOLD_MS = 10000;
+static const uint32_t RG_ENTER_HOLD_MS = 5000;
 // Yellow pair (GPIO 38 + 39, top of each column): 3s → song menu, 4s total → main idle (all rhythm phases).
 static const uint32_t RG_EXIT_HOLD_MENU_MS = 3000;
 static const uint32_t RG_EXIT_HOLD_IDLE_MS = 4000;
@@ -287,10 +291,16 @@ static bool edgeOnRightColumn(const bool *edgeDown) {
   return false;
 }
 
-// Enter / exit rhythm: both yellow keys (GPIO 38 left top + GPIO 39 right top), held together.
+// Exit rhythm: both yellow keys (GPIO 38 left top + GPIO 39 right top), held together.
 static bool rhythmYellowPairHold(const bool *down) { return down[IDX_38] && down[IDX_11]; }
 
-static bool rhythmEnterHold(const bool *down) { return rhythmYellowPairHold(down); }
+// Enter rhythm: all four top keys — both yellow (GPIO 38 / 39) AND both blue
+// (GPIO 42 / 2). Four keys rather than two so it cannot be triggered by ordinary
+// two-handed play. Exit stays on the yellow pair, which is a subset — harmless,
+// since the exit check only runs once the phase is no longer RG_NORMAL.
+static bool rhythmEnterHold(const bool *down) {
+  return down[IDX_LEFT[0]] && down[IDX_LEFT[1]] && down[IDX_RIGHT[0]] && down[IDX_RIGHT[1]];
+}
 
 // Returns true when phase changed (caller should return from rhythmGameLoop).
 static bool rhythmProcessBottomExitHold(uint32_t now, const bool *down) {
@@ -1090,16 +1100,20 @@ void rhythmGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
     if (rhythmEnterHold(down)) {
       if (s_eightHoldStart == 0)
         s_eightHoldStart = now;
-      else if (now - s_eightHoldStart >= RG_ENTER_HOLD_MS) {
+      s_enterHeldMs = now - s_eightHoldStart;
+      if (s_enterHeldMs >= RG_ENTER_HOLD_MS) {
         s_phase = RG_FLASH;
         s_flashStartMs = now;
         s_eightHoldStart = 0;
+        s_enterHeldMs = 0;
         s_menuIdx = 0;
         s_rhythmUiLastMs = now;
-        Serial.println("[RHYTHM] Enter retro mode (both yellow held >=10s)");
+        Serial.println("[RHYTHM] Enter retro mode (4 top keys held >=5s)");
       }
-    } else
+    } else {
       s_eightHoldStart = 0;
+      s_enterHeldMs = 0;
+    }
     return;
   }
 
@@ -1339,6 +1353,10 @@ bool rhythmGameShouldSilenceSynth() {
 }
 
 bool rhythmGameSuppressNormalUi() { return s_phase != RG_NORMAL; }
+
+bool rhythmGameEnterCountdownActive() { return s_phase == RG_NORMAL && s_eightHoldStart != 0; }
+uint32_t rhythmGameEnterHeldMs() { return s_enterHeldMs; }
+uint32_t rhythmGameEnterTotalMs() { return RG_ENTER_HOLD_MS; }
 
 void rhythmGameAudioPump() {
   if (s_phase == RG_PLAYING)

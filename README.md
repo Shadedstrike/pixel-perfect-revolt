@@ -62,6 +62,34 @@ Controller overrides go under `[env:esp32-s3-devkitc-1]`. Actuator overrides und
 
 Constants in `.cpp` files (e.g. `src/leds.cpp`, `src/rhythm_game.cpp`) require editing source directly.
 
+### Entering rhythm mode — the hold countdown
+
+Hold **all four top keys** (yellow 38 + 39, blue 42 + 2) for **5 s**. While held, the
+LCD is taken over by `lcdRetroEnterCountdown()`:
+
+```
+[sprite border marching right ]
+  PRESS 5 MORE SEC
+R Y T H E M  M 0 D E     <- lightly glitched
+[sprite border marching left  ]
+```
+
+- Counts **5 → 1**, never displays 0 (it enters at 0).
+- Row 2 corrupts at most **two** columns per frame, and only columns holding a
+  letter, so the phrase stays readable. Glitch positions come from a hash of
+  (frame, column) rather than a fresh random each redraw — otherwise slow I2C
+  writes make it read as noise instead of glitch.
+- Borders use CGRAM slots **0–3**. Safe: meltdown also uses 0–3 but only during
+  play, and the play lane uses 4–5.
+- `lcdPollMs` drops to 60 ms while the countdown is up, or the sprite march looks
+  broken at the normal 500 ms.
+- Releasing any of the four keys resets the timer to zero — there is no partial
+  credit.
+
+Exit is still the **yellow pair only** (3 s → menu, 4 s → synth). That's a subset of
+the enter gesture, which is harmless because the exit check only runs once the phase
+is no longer `RG_NORMAL`.
+
 ### Input timing — `inputFastPoll()` (`src/main.cpp`)
 
 Buttons used to be sampled once per `loop()`. In song mode that same loop decodes MP3
@@ -333,7 +361,7 @@ but its LED stays dark.
 
 | Constant | Default | What it changes |
 |----------|---------|-----------------|
-| `RG_ENTER_HOLD_MS` | 10000 | Both yellow (GPIO 38 + 39) held together 10 s → enter rhythm mode. **Two keys only** — despite the `s_eightHoldStart` variable name, which is left over from an older eight-key gesture. See `rhythmEnterHold()`. |
+| `RG_ENTER_HOLD_MS` | 5000 | **All four top keys** — both yellow (GPIO 38 + 39) *and* both blue (GPIO 42 + 2) — held together 5 s → enter rhythm mode. Four keys so ordinary two-handed play can't trigger it. The `s_eightHoldStart` variable name is historic. See `rhythmEnterHold()`. |
 | `RG_EXIT_HOLD_MENU_MS` | 3000 | Bottom pair hold → song menu |
 | `RG_EXIT_HOLD_IDLE_MS` | 4000 | Bottom pair hold → exit to synth idle |
 | `RG_UI_IDLE_TO_SYNTH_MS` | 25000 | Menu/results AFK → synth idle |

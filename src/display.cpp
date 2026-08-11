@@ -2726,3 +2726,99 @@ void lcdRetroResultsPrompt(uint32_t wallMs, const char *nextSongTitle) {
   lcd.print("16=BACK TO MENU     ");
 }
 
+
+// ===================== Enter-rhythm countdown (RG_NORMAL) =====================
+// Shown while all four top keys are held. Owns the whole 20x4 panel:
+//   row 0  animated sprite border, marching right
+//   row 1  "PRESS n MORE SEC"
+//   row 2  "R Y T H E M  M 0 D E", lightly glitched but always readable
+//   row 3  animated sprite border, marching left (counter-motion)
+//
+// CGRAM slots 0-3 are safe here: meltdown owns 0-3 but only runs during play, and
+// the play lane uses 4-5. lcdRetroPlayingInvalidate() redefines its own glyphs on
+// entry, so nothing downstream depends on what we leave behind.
+
+static const uint8_t kEnterSprite0[8] = {
+    0x00, 0x0E, 0x1F, 0x1F, 0x1F, 0x0E, 0x00, 0x00,
+};
+static const uint8_t kEnterSprite1[8] = {
+    0x00, 0x04, 0x0E, 0x1F, 0x0E, 0x04, 0x00, 0x00,
+};
+static const uint8_t kEnterSprite2[8] = {
+    0x00, 0x00, 0x04, 0x0E, 0x04, 0x00, 0x00, 0x00,
+};
+static const uint8_t kEnterSprite3[8] = {
+    0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x00, 0x00,
+};
+
+static bool s_enterGlyphsLoaded = false;
+
+static void lcdRetroDefineEnterGlyphs(void) {
+  if (s_enterGlyphsLoaded)
+    return;
+  lcdWriteCgramGlyph(0, kEnterSprite0);
+  lcdWriteCgramGlyph(1, kEnterSprite1);
+  lcdWriteCgramGlyph(2, kEnterSprite2);
+  lcdWriteCgramGlyph(3, kEnterSprite3);
+  s_enterGlyphsLoaded = true;
+}
+
+void lcdRetroEnterCountdownInvalidate(void) { s_enterGlyphsLoaded = false; }
+
+// Deterministic per (frame, col) so a character does not flicker within a frame —
+// LCD writes are slow, and re-randomising every redraw reads as noise, not glitch.
+static uint8_t lcdEnterHash(uint32_t frame, uint8_t col) {
+  uint32_t h = frame * 2654435761u + (uint32_t)col * 40503u;
+  h ^= h >> 13;
+  h *= 1274126177u;
+  h ^= h >> 16;
+  return (uint8_t)(h & 0xFF);
+}
+
+void lcdRetroEnterCountdown(uint32_t now, uint32_t heldMs, uint32_t totalMs) {
+  lcdRetroDefineEnterGlyphs();
+
+  const uint32_t remainMs = (heldMs >= totalMs) ? 0u : (totalMs - heldMs);
+  int secs = (int)((remainMs + 999u) / 1000u); // 5,4,3,2,1 — never shows 0
+  if (secs < 1)
+    secs = 1;
+  if (secs > 9)
+    secs = 9;
+
+  const uint32_t frame = now / 120u; // sprite step
+  char row[21];
+
+  // --- row 0 / row 3: marching sprite border, opposite directions ---
+  for (int r = 0; r < 2; r++) {
+    const int lcdRow = r ? 3 : 0;
+    lcd.setCursor(0, lcdRow);
+    for (uint8_t c = 0; c < 20; c++) {
+      // Counter-motion: row 3 walks the pattern the other way.
+      const uint32_t phase = r ? (frame + (uint32_t)(19 - c)) : (frame + (uint32_t)c);
+      lcd.write((uint8_t)(phase & 0x03));
+    }
+  }
+
+  // --- row 1: countdown ---
+  snprintf(row, sizeof(row), "  PRESS %d MORE SEC  ", secs);
+  lcd.setCursor(0, 1);
+  lcd.print(row);
+
+  // --- row 2: glitched title, exactly 20 cols ---
+  static const char kTitle[21] = "R Y T H E M  M 0 D E";
+  memcpy(row, kTitle, 21);
+  // Corrupt at most two columns per frame, and only ones carrying a letter, so the
+  // phrase stays readable — "slightly glitched", not scrambled.
+  const uint32_t gframe = now / 90u;
+  for (int k = 0; k < 2; k++) {
+    const uint8_t h = lcdEnterHash(gframe, (uint8_t)k);
+    const uint8_t col = (uint8_t)(h % 20u);
+    if (kTitle[col] == ' ')
+      continue;
+    static const char kGlitchPool[] = "#*%&$@!?";
+    row[col] = kGlitchPool[(h >> 3) % (sizeof(kGlitchPool) - 1)];
+  }
+  row[20] = '\0';
+  lcd.setCursor(0, 2);
+  lcd.print(row);
+}

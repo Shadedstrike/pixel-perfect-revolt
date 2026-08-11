@@ -69,6 +69,13 @@ void lcdRetroStillTherePrompt(uint32_t now, uint32_t promptStartMs);
 uint32_t lcdRetroTitleScrollDurationMs(const char *songTitle, unsigned visibleCols);
 void lcdRetroGetReady(uint32_t now, uint32_t getReadyStartMs, const char *songTitle, uint32_t titleScrollMs,
                       uint32_t countEachMs);
+// Held-to-enter countdown, shown in RG_NORMAL while all four top keys are down.
+// Owns the full 20x4 panel: sprite borders on rows 0/3, "PRESS n MORE SEC" on
+// row 1, lightly glitched "R Y T H E M  M 0 D E" on row 2.
+void lcdRetroEnterCountdown(uint32_t now, uint32_t heldMs, uint32_t totalMs);
+// Forget the CGRAM slots this screen loaded (call if another screen overwrites 0-3).
+void lcdRetroEnterCountdownInvalidate(void);
+
 void lcdRetroResultsScore(const char *title, char grade, int mainPct, int bonusPct, int totalPct, uint32_t now);
 void lcdRetroResultsPrompt(uint32_t wallMs, const char *nextSongTitle);
 
