@@ -332,6 +332,60 @@ uint32_t inputFastPollWorstGapMs(bool reset) {
   return v;
 }
 
+// ---- Idle gesture choreography ----------------------------------------------
+// People did not know the piece had hidden modes. Text alone does not fix that --
+// most visitors never read the screen. Breathing the exact key PAIR that unlocks
+// each mode teaches the gesture physically: two buttons pulsing as a unit reads as
+// "press these together" without language.
+// Slots into the idle rotation between the normal LED modes, so it appears
+// regularly without replacing the ambient look.
+static const uint32_t IDLE_CHOREO_STEP_MS = 5000; // per gesture
+static const uint32_t IDLE_CHOREO_TOTAL_MS = IDLE_CHOREO_STEP_MS * 4; // all four
+static bool     s_idleChoreoActive = false;
+static uint32_t s_idleChoreoStartMs = 0;
+
+static uint8_t idleChoreoWhich(uint32_t now, uint32_t sinceIdleMs) {
+  (void)now;
+  return (uint8_t)((sinceIdleMs / IDLE_CHOREO_STEP_MS) & 0x03u);
+}
+
+// Renders one gesture: its keys breathe together, everything else dark.
+static void renderIdleChoreo(uint32_t now, uint32_t sinceIdleMs) {
+  const uint8_t which = idleChoreoWhich(now, sinceIdleMs);
+  // Breathe 0.15 .. 1.0 at ~0.5Hz so it reads as an invitation, not an alarm.
+  const float ph = (float)((now % 2000u)) / 2000.0f;
+  const float v = 0.15f + 0.85f * (0.5f - 0.5f * cosf(ph * 2.0f * (float)PI));
+
+  bool member[10] = {};
+  switch (which) {
+    case 0: // Simon — both blue
+      member[IDX_LEFT[1]] = member[IDX_RIGHT[1]] = true;
+      break;
+    case 1: // Rhythm — all four top keys
+      member[IDX_LEFT[0]] = member[IDX_RIGHT[0]] = true;
+      member[IDX_LEFT[1]] = member[IDX_RIGHT[1]] = true;
+      break;
+    case 2: // Wave — both green
+      member[IDX_LEFT[2]] = member[IDX_RIGHT[2]] = true;
+      break;
+    default: // Scale — both red
+      member[IDX_LEFT[3]] = member[IDX_RIGHT[3]] = true;
+      break;
+  }
+
+  for (int i = 0; i < 10; i++) {
+    if (!member[i]) {
+      setLED_RGB(i, 0, 0, 0);
+      continue;
+    }
+    uint8_t r = 0, g = 0, b = 0;
+    getPressColorForGPIO(BTN_PINS[i], r, g, b);
+    if (r == 0 && g == 0 && b == 0)
+      r = g = b = 200;
+    setLED_RGB(i, (uint8_t)(r * v), (uint8_t)(g * v), (uint8_t)(b * v));
+  }
+}
+
 // ===================== Loop =====================
 // Voice-change hold gestures: both GREEN cycles wave shape, both RED cycles scale.
 // Countdown state is read by the LCD dispatch further down.
@@ -666,16 +720,27 @@ void loop(){
   static uint32_t nextIdleAutoAdvanceMs = 0;
   if (!idle || rhythmGameIsActive()) {
     nextIdleAutoAdvanceMs = 0;
+    s_idleChoreoActive = false;
   } else if (nextIdleAutoAdvanceMs == 0) {
     nextIdleAutoAdvanceMs = now + 120000u;
   } else if ((int32_t)(now - nextIdleAutoAdvanceMs) >= 0) {
-    idleMode = (idleMode + 1) % 12;
-    modeDisplayStart = now;
-    nextIdleAutoAdvanceMs = now + 120000u;
+    // Alternate: normal idle mode, then choreography, then the next mode, and so on
+    // — so the teaching pass recurs without displacing the ambient look.
+    if (!s_idleChoreoActive) {
+      s_idleChoreoActive = true;
+      s_idleChoreoStartMs = now;
+      nextIdleAutoAdvanceMs = now + IDLE_CHOREO_TOTAL_MS;
+      Serial.println("[IDLE] gesture choreography");
+    } else {
+      s_idleChoreoActive = false;
+      idleMode = (idleMode + 1) % 12;
+      modeDisplayStart = now;
+      nextIdleAutoAdvanceMs = now + 120000u;
     static const char *const kIdleModeNames[] = {"RGB Breathe", "Warm Flame", "Cool Flame", "RGB+Flame", "Solid Colors",
                                                    "Rainbow Wave", "Aurora", "Starlight", "Gradient Flow", "Matrix Rain",
                                                    "Lightning Strike", "Plasma Swirl"};
-    Serial.printf("[IDLE] Auto-advance (2 min idle): %d (%s)\n", idleMode, kIdleModeNames[idleMode]);
+      Serial.printf("[IDLE] Auto-advance (2 min idle): %d (%s)\n", idleMode, kIdleModeNames[idleMode]);
+    }
   }
 
   // ========= LED rendering (same behavior as before) =========
@@ -801,6 +866,10 @@ void loop(){
       lcdHoldCountdown(now, simonGameEnterHeldMs(), simonGameEnterTotalMs(), "F O L L O W  L E A D");
       lastLCD = now;
     } else if (simonGameDrawLcd(now)) {
+      lastLCD = now;
+    } else if (s_idleChoreoActive) {
+      // Same gesture the LEDs are breathing right now — text and lights agree.
+      lcdIdleGesturePrompt(now, idleChoreoWhich(now, now - s_idleChoreoStartMs));
       lastLCD = now;
     } else if (s_voiceSelectKind == 2) {
       lcdPrintScaleSelection(scaleIndex, now);
@@ -1497,6 +1566,8 @@ void loop(){
   // channels whose value is unchanged, so the extra pass costs almost no I2C.
   if (simonGameIsActive())
     simonGameRenderLeds(now);
+  else if (s_idleChoreoActive)
+    renderIdleChoreo(now, now - s_idleChoreoStartMs);
 
   // ========= Audio render =========
   // Simon supplies its own tones so the leader's sequence is audible.

@@ -90,6 +90,9 @@ void lcdSimonStatus(uint32_t now, int round, int step, int total, bool playerTur
 void lcdSimonInvalidate(void);
 void lcdSimonGameOver(uint32_t now, int round);
 void lcdSimonWin(uint32_t now, int round);
+// Idle "how to play" prompt, one gesture per `which` (0-3). Rotates through the
+// idle animation set so people discover the hidden modes without signage.
+void lcdIdleGesturePrompt(uint32_t now, uint8_t which);
 // Forget the CGRAM slots this screen loaded (call if another screen overwrites 0-3).
 void lcdRetroEnterCountdownInvalidate(void);
 

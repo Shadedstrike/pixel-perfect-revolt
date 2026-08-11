@@ -3021,3 +3021,30 @@ void lcdSimonWin(uint32_t now, int round) {
   snprintf(buf, sizeof(buf), "ALL %d LEVELS CLEAR", round);
   lcdSimonCentre(2, buf);
 }
+
+// ===================== Idle "how to play" prompts =====================
+// The last installation's biggest problem was that nobody knew the piece had
+// hidden modes. These rotate through the idle animation set and spell out each
+// gesture, paired with the idle LED choreography that lights the same keys.
+void lcdIdleGesturePrompt(uint32_t now, uint8_t which) {
+  lcdSimonDefineGlyphs();
+  const uint32_t frame = now / 260u;
+  // Heart border, slow — inviting rather than urgent.
+  for (int r = 0; r < 2; r++) {
+    lcd.setCursor(0, r ? 3 : 0);
+    for (uint8_t c = 0; c < 20; c++) {
+      const uint32_t pos = r ? (frame + (uint32_t)(19 - c)) : (frame + (uint32_t)c);
+      lcd.write((uint8_t)((pos & 0x03u) == 0u ? 2 : ((pos & 0x01u) ? 1 : 3)));
+    }
+  }
+  const char *l1;
+  const char *l2;
+  switch (which & 0x03u) {
+    case 0:  l1 = "HOLD BOTH BLUE 5s"; l2 = "F O L L O W  L E A D"; break;
+    case 1:  l1 = "HOLD 4 TOP KEYS 5s"; l2 = "R Y T H E M  M 0 D E"; break;
+    case 2:  l1 = "HOLD BOTH GREEN"; l2 = "C H A N G E  W A V E"; break;
+    default: l1 = "HOLD BOTH RED"; l2 = "C H A N G E  S C A L E"; break;
+  }
+  lcdSimonCentre(1, l1);
+  lcdSimonCentre(2, l2);
+}
