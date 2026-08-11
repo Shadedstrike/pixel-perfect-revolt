@@ -2411,6 +2411,11 @@ static void meltdownPrintRows(char row[4][21]) {
     for (int c = 0; c < 20; c++)
       lcd.write((uint8_t)row[r][c]);
     memcpy(s_meltdownLastDraw[r], row[r], 21);
+    // The row delta-check never helps here — the effect randomises every cell, so
+    // all four rows always differ and this blocks for 80 writes straight. Feed the
+    // decoder between rows, same as the play renderer.
+    if (s_lcdInterRowCb)
+      s_lcdInterRowCb();
   }
 }
 
@@ -2448,6 +2453,15 @@ void lcdRetroMeltdownBegin(void) {
 }
 
 bool lcdRetroHoldMeltdown(uint32_t now, uint32_t startMs) {
+  // Cap the effect's own frame rate. It was redrawing on every LCD poll (~33ms),
+  // pushing 80 characters each time. Glitch/noise reads fine at ~11fps and this is
+  // the difference between a fun easter egg and one that stalls the song.
+  static uint32_t s_meltdownLastFrameMs = 0;
+  const uint32_t kMeltdownFrameMs = 90u;
+  if (s_meltdownLastFrameMs != 0 && (uint32_t)(now - s_meltdownLastFrameMs) < kMeltdownFrameMs)
+    return true; // still active, just not redrawing this pass
+  s_meltdownLastFrameMs = now;
+
   const uint32_t kGlitchMs = 2200u;
   const uint32_t kChaosMs  = 4200u;
   const uint32_t kDisintMs = 5800u;
