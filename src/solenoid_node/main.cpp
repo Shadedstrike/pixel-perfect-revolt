@@ -155,6 +155,21 @@ static void onEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
     return;
   }
 
+  if (pkt->on == ACTUATOR_ON_DIRECT) {
+    const ActuatorColor c = (ActuatorColor)pkt->color;
+    const uint8_t mask = pkt->level_r;
+    const bool on = pkt->level_g != 0;
+    // Independent targets — a plain colour ON cannot separate these.
+    if ((mask & ACTUATOR_TARGET_SOLENOID) && c != ACTUATOR_COLOR_BLUE)
+      solenoidOutputSetChannel((uint8_t)c, on);
+    if ((mask & ACTUATOR_TARGET_MOTOR) && motorOutputHasMotor(c))
+      motorOutputSetColor(c, on);
+    if (mask & ACTUATOR_TARGET_RELAY)
+      relayOutputSetColor(c, on);
+    Serial.printf("[ACT] direct %s mask=0x%X %s\n", serialStatusColorName(c), (unsigned)mask, on ? "ON" : "OFF");
+    return;
+  }
+
   if (pkt->on == ACTUATOR_ON_RGB_HOLD) {
     if (dmxOutputReady())
       dmxOutputSetCombinedRgbHold(pkt->level_r, pkt->level_g, pkt->level_b, pkt->color);

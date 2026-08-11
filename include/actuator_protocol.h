@@ -5,7 +5,7 @@
 
 // ESP-NOW payload between controller and actuator node (solenoids + DMX).
 #define ACTUATOR_PROTO_MAGIC 0xA7u
-#define ACTUATOR_PROTO_VERSION 3u
+#define ACTUATOR_PROTO_VERSION 4u
 
 #define ACTUATOR_ON_OFF 0u
 #define ACTUATOR_ON_ON 1u
@@ -14,6 +14,17 @@
 #define ACTUATOR_ON_IDLE_DMX 4u
 #define ACTUATOR_ON_IDLE_END 5u
 #define ACTUATOR_ON_RGB_HOLD 6u
+// Direct output control — drives solenoid / motor / relay independently for one
+// colour, which a plain colour ON cannot do (applyActuatorColor fires all three
+// together). Used by the Simon win sequence, which needs the solenoid on, a pause,
+// then the pump pulsing on its own.
+//   color   = ActuatorColor
+//   level_r = target mask: bit0 solenoid, bit1 motor (pump), bit2 relay
+//   level_g = 1 on, 0 off
+#define ACTUATOR_ON_DIRECT 7u
+#define ACTUATOR_TARGET_SOLENOID 0x01u
+#define ACTUATOR_TARGET_MOTOR    0x02u
+#define ACTUATOR_TARGET_RELAY    0x04u
 
 enum ActuatorColor : uint8_t {
   ACTUATOR_COLOR_RED = 0,
@@ -41,6 +52,8 @@ static inline bool actuatorPacketValid(const ActuatorCmdPacket *p) {
   if (p->on == ACTUATOR_ON_BUBBLE_PARTY || p->on == ACTUATOR_ON_BUBBLE_KILL || p->on == ACTUATOR_ON_IDLE_DMX ||
       p->on == ACTUATOR_ON_IDLE_END || p->on == ACTUATOR_ON_RGB_HOLD)
     return true;
+  if (p->on == ACTUATOR_ON_DIRECT)
+    return p->color < ACTUATOR_COLOR_COUNT;
   return p->color < ACTUATOR_COLOR_COUNT && (p->on == ACTUATOR_ON_OFF || p->on == ACTUATOR_ON_ON);
 }
 

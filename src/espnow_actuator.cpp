@@ -203,6 +203,18 @@ ActuatorCmdPacket espnowActuatorMakeIdleEndPacket() {
   return pkt;
 }
 
+ActuatorCmdPacket espnowActuatorMakeDirectPacket(ActuatorColor color, uint8_t targetMask, bool on) {
+  ActuatorCmdPacket pkt = {};
+  pkt.magic = ACTUATOR_PROTO_MAGIC;
+  pkt.version = ACTUATOR_PROTO_VERSION;
+  pkt.color = (uint8_t)color;
+  pkt.on = ACTUATOR_ON_DIRECT;
+  pkt.seq = ++s_txSeq;
+  pkt.level_r = targetMask;
+  pkt.level_g = on ? 1u : 0u;
+  return pkt;
+}
+
 ActuatorCmdPacket espnowActuatorMakeRgbHoldPacket(uint8_t r, uint8_t g, uint8_t b, uint8_t w, uint8_t amber) {
   ActuatorCmdPacket pkt = {};
   pkt.magic = ACTUATOR_PROTO_MAGIC;
