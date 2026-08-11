@@ -233,9 +233,9 @@ void setup(){
 
   // Last: input sampling moves to its own task so LCD/MP3 stalls in loop() cannot
   // delay a button press reaching the relay.
-  inputFastPollStartTask();
   // Audio outranks the display: keep the MP3 ring fed between LCD row writes.
   lcdSetInterRowCallback(rhythmGameAudioPump);
+  // NOTE: the input sampler task is deliberately NOT started here. See loop().
 }
 
 // ===================== Fast input path =====================
@@ -410,6 +410,12 @@ void loop(){
     s_rhythmInited = true;
     rhythmGameSetup();
     buttonsRestoreInputPullups();
+    // Start the sampler only AFTER the deferred SD/rhythm init has finished.
+    // Starting it in setup() put a priority-5 task preempting every 2ms straight
+    // through this SD scan and the button re-mux below it — which is when boots
+    // began hanging with a blank LCD and every key stuck white. Whatever the exact
+    // interaction, nothing is gained by sampling before the panel is even up.
+    inputFastPollStartTask();
   }
 
   actuatorLinkLoop();
@@ -1066,10 +1072,17 @@ void loop(){
   // flame stepping for idle flame modes (also when cycling modes)
   // Only show idle modes if truly idle (no buttons pressed) OR cycling modes (but not if buttons pressed)
   // If buttons are pressed, prefer showing RGBY colors on pressed buttons
-  bool showingIdleModes = (idle && !anyDown);
+  // Choreography owns all ten LEDs while it runs. It used to render AFTER this
+  // block, so both wrote every LED every loop with different colours and the panel
+  // strobed at loop rate. Skipping the normal idle render is the fix — an override
+  // pass cannot work when the thing it overrides also writes every frame.
+  bool showingIdleModes = (idle && !anyDown && !s_idleChoreoActive);
   if (showingIdleModes && (idleMode==1 || idleMode==2 || idleMode==3) && (now - lastFlameStepMs >= FLAME_UPDATE_MS)){
     lastFlameStepMs = now; flameStep(flameL); flameStep(flameR);
   }
+
+  if (s_idleChoreoActive && idle && !anyDown)
+    renderIdleChoreo(now, now - s_idleChoreoStartMs);
 
   // IDLE render (also render when cycling through modes)
   // Only show idle modes if no buttons are pressed (prefer RGBY colors on pressed buttons)
@@ -1566,8 +1579,6 @@ void loop(){
   // channels whose value is unchanged, so the extra pass costs almost no I2C.
   if (simonGameIsActive())
     simonGameRenderLeds(now);
-  else if (s_idleChoreoActive)
-    renderIdleChoreo(now, now - s_idleChoreoStartMs);
 
   // ========= Audio render =========
   // Simon supplies its own tones so the leader's sequence is audible.
