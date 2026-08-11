@@ -1952,9 +1952,33 @@ static void lcdWriteCgramGlyph(uint8_t slot, const uint8_t *src) {
 }
 
 // Play lane CGRAM (slots 4–5). Meltdown uses 0–3 so play glyphs stay out of its way.
+// Sub-character motion. A note used to jump a whole cell (1/20 of the screen) per
+// step, which no frame rate can smooth. These are the same heart drawn at three
+// horizontal offsets inside the 5-pixel cell, tripling the effective resolution to
+// 60 steps across the lane.
+//
+// Slots 1,2,3 — NOT 0: char 0x00 terminates the C string the row is built in.
+// Narrow (3px) so shifting left/right by one pixel never clips.
+static const uint8_t kHeartSubL[8] = { // shifted 1px left  (bits 4-2)
+    0x00, 0x14, 0x1C, 0x1C, 0x08, 0x00, 0x00, 0x00,
+};
+static const uint8_t kHeartSubC[8] = { // centred          (bits 3-1)
+    0x00, 0x0A, 0x0E, 0x0E, 0x04, 0x00, 0x00, 0x00,
+};
+static const uint8_t kHeartSubR[8] = { // shifted 1px right (bits 2-0)
+    0x00, 0x05, 0x07, 0x07, 0x02, 0x00, 0x00, 0x00,
+};
+static const char kBeatSubChars[3] = {'\x01', '\x02', '\x03'};
+
 static void lcdRetroDefinePlayLaneGlyphs(void) {
+  lcdWriteCgramGlyph(1, kHeartSubL);
+  lcdWriteCgramGlyph(2, kHeartSubC);
+  lcdWriteCgramGlyph(3, kHeartSubR);
   lcdWriteCgramGlyph(4, kLcdHeartGlyph);
   lcdWriteCgramGlyph(5, kLcdBurstGlyph);
+  // Play now owns 1-3 as well, so the countdown and Simon panels must reload theirs.
+  lcdRetroEnterCountdownInvalidate();
+  lcdSimonInvalidate();
 }
 
 // Heart / burst shapes for play lane — also called from invalidate after meltdown.
@@ -2137,19 +2161,24 @@ static void lcdRetroFillNoteLane(char *row, uint32_t scrollPeriodMs, uint32_t so
     }
 
     int64_t dt   = (int64_t)beatMs - (int64_t)songRelMs;
-    int64_t dCol = (dt * (int64_t)kCpp) / (int64_t)period;
-    col          = kHitColC + (int)dCol;
+    // Work in thirds of a cell so motion is smooth rather than cell-quantised.
+    const int SUB = 3;
+    const int64_t dSubRaw = (dt * (int64_t)kCpp * (int64_t)SUB) / (int64_t)period;
+    // Floor-divide: dt goes negative once a note is past the strike point, and C
+    // truncation toward zero would make notes stutter as they cross it.
+    const int64_t q = (dSubRaw >= 0) ? (dSubRaw / SUB) : -(((-dSubRaw) + SUB - 1) / SUB);
+    int sub = (int)(dSubRaw - q * SUB);
+    if (sub < 0)
+      sub += SUB;
+    col = kHitColC + (int)q;
 
     if (col < 0 || col >= W)
       continue;
 
-    // Hearts for the whole lane. This used to draw ':' for anything past
-    // kHitColR+3, which is most of a note's visible travel — so the lane read as a
-    // colon sliding across with the heart only appearing at the last moment.
-    // kLaneDotFromCol pushes the dim dot to the far edge only; set it >= W to
-    // disable dots entirely.
+    // Hearts across the whole lane; a dim dot only at the far edge. Set
+    // kLaneDotFromCol >= W to disable dots entirely.
     static const int kLaneDotFromCol = 18;
-    row[col] = (col >= kLaneDotFromCol) ? ':' : kBeatChar;
+    row[col] = (col >= kLaneDotFromCol) ? ':' : kBeatSubChars[sub];
   }
 }
 
