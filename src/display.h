@@ -50,6 +50,8 @@ void lcdRetroPlayLaneGlyphsInvalidate(void);
 // Called between LCD row writes — point this at the MP3 pump so a full-panel
 // refresh cannot block audio decode for 10-20ms in one stretch.
 void lcdSetInterRowCallback(void (*cb)(void));
+// Push bass envelope + beat pulse (0..1) for the bottom-row heart visualiser.
+void lcdRetroSetVizLevels(float bassEnv, float beatPulse);
 void lcdRetroMeltdownBegin(void);
 // 5s hold easter-egg: glitch → matrix hearts → disintegrate → rain wash.
 bool lcdRetroHoldMeltdown(uint32_t now, uint32_t startMs);

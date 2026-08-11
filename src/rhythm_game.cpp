@@ -1456,9 +1456,13 @@ void rhythmGameGetFrontPlayingLeds(uint32_t now, uint8_t &rL, uint8_t &gL, uint8
       rawPulse = fmaxf(rawPulse, bp);
   }
   rawPulse = fmaxf(rawPulse, fminf(1.f, bassEnv * 1.15f));
-  float beatFlash = powf(rawPulse, 0.22f);
-  if (beatFlash < 0.08f)
-    beatFlash = 0.08f;
+  // Was powf(rawPulse, 0.22f) with a 0.08 floor. That exponent compresses the range
+  // so hard the fronts sat near full the whole song -- rawPulse 0.1 came out at 0.60,
+  // 0.5 at 0.86 -- so they never visibly flashed. 1.35 restores the swing; the floor
+  // just keeps them from going fully dark between beats.
+  float beatFlash = powf(rawPulse, 1.35f);
+  if (beatFlash < 0.04f)
+    beatFlash = 0.04f;
 
   int scorePct = rhythmGameLiveScorePct(songRel);
   float hue = ((float)scorePct / 100.f) * 120.f;
@@ -2084,6 +2088,18 @@ bool rhythmGameDrawLcd(uint32_t now) {
       uint32_t recoverAge = now - s_meltdownRecoverStartMs;
       if (recoverAge < s_meltdownRecoverDurMs)
         recoverGlitch = 1.f - (float)recoverAge / (float)s_meltdownRecoverDurMs;
+    }
+    {
+      // Drive the bottom-row visualiser from the same signals the front LEDs use.
+      float vizEnv = 0.f;
+      rhythmStreamGetBassLedEnvelope(&vizEnv);
+      float vizPulse = rhythmNextBeatPulse(rel);
+      if (rhythmStreamHasStrongBassOnsetYet()) {
+        const float bp = rhythmBassBeatPulse(rel);
+        if (bp >= 0.f)
+          vizPulse = fmaxf(vizPulse, bp);
+      }
+      lcdRetroSetVizLevels(vizEnv, vizPulse);
     }
     lcdRetroPlaying(s_songs[s_playSongIdx].title, el, s_songDurationMs, scrollPeriodMs, now, rel,
                     s_displayBeatsBuf, s_nDisplayBeats,

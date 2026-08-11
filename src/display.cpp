@@ -2194,6 +2194,43 @@ static void lcdRetroFillNoteLane(char *row, uint32_t scrollPeriodMs, uint32_t so
 }
 
 // Row 3: scrolling sub-beat ticks + fixed strike reticle (cols 8–12).
+// ---- Bottom-row heart visualiser -------------------------------------------
+// Rows 2-3 become a two-tall bar display: solid block body with a heart on top.
+// Uses 0xFF (the HD44780 built-in full block) and CGRAM slot 4, so it needs no
+// extra glyphs. Levels are pushed in from rhythm_game -- the same bass envelope and
+// beat pulse that drive the front LEDs, so screen and lights breathe together.
+static float s_vizEnv = 0.f;
+static float s_vizPulse = 0.f;
+
+void lcdRetroSetVizLevels(float bassEnv, float beatPulse) {
+  s_vizEnv = bassEnv;
+  s_vizPulse = beatPulse;
+}
+
+static void lcdRetroFillVizRows(char *rowTop, char *rowBot, uint32_t now) {
+  const int W = 20;
+  const float drive = fmaxf(s_vizEnv, s_vizPulse);
+  for (int c = 0; c < W; c++) {
+    // Per-column weight + a slow sway, so it reads as a spectrum rather than all
+    // twenty columns pumping in unison.
+    const float ph = (float)c * 0.55f + (float)(now % 8000u) * 0.0009f;
+    const float w = 0.30f + 0.70f * fabsf(sinf(ph));
+    const float lvl = drive * w;
+    if (lvl > 0.62f) {
+      rowTop[c] = kBeatChar;      // heart crest
+      rowBot[c] = (char)0xFF;     // solid body
+    } else if (lvl > 0.24f) {
+      rowTop[c] = ' ';
+      rowBot[c] = kBeatChar;      // single heart
+    } else {
+      rowTop[c] = ' ';
+      rowBot[c] = ' ';
+    }
+  }
+  rowTop[W] = '\0';
+  rowBot[W] = '\0';
+}
+
 // Persistent strike bracket, drawn on the NOTE LANE row itself.
 // The highway row below already had >-+-< markers, but those sit on a different
 // line from the hearts, so a heart never visibly enters anything — players had no
@@ -2647,6 +2684,9 @@ void lcdRetroPlaying(const char *title, uint32_t elapsedMs, uint32_t durationMs,
   };
   // Feed the decoder between rows, not just after the whole panel. A 4x20 refresh
   // blocks for 10-20ms in one stretch; interleaving keeps the MP3 ring topped up.
+  // Bottom two rows are the visualiser now; timing lives on the buttons.
+  lcdRetroFillVizRows(row2, row3, wallMs);
+
   deltaWriteRow(0, row0, s_playLastRow0);
   if (s_lcdInterRowCb) s_lcdInterRowCb();
   deltaWriteRow(1, row1, s_playLastRow1);
