@@ -123,7 +123,9 @@ void identifyBreakoutPins(){
     // - GPIO 22, 26-34: SPI flash/PSRAM / octal SPI (do not mux in identification mode)
     // - GPIO 23, 25, 26: often special / overlap with above
     // - GPIO 43-48: Strapping / chip-specific (skip for safety)
-    // 35-42: input-only on many S3 packages — allowed here for breakout probing only.
+    // 35-42: full input+output on ESP32-S3 (input-only 34-39 is an ESP32-CLASSIC
+  // property and does not apply here). 35-37 are still reserved on octal-PSRAM
+  // modules; 40/41/42 are free and are where SD CS now lives.
     if(pin == 0 || pin == 1 || pin == 3 || // Strapping pins
        pin == 19 || pin == 20 || // USB/JTAG
        pin == 22 || // Problematic

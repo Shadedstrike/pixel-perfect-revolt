@@ -294,14 +294,14 @@ Override in `[env:esp32-s3-devkitc-1]` `build_flags` if using T-ETH-Lite pins.
 
 | Setting | Default (Elite) | What it changes |
 |---------|-----------------|-----------------|
-| `RHYTHM_SD_CS_PIN` | **21** (was 12) | SD chip select — **see rewire note** |
+| `RHYTHM_SD_CS_PIN` | **42** (was 12) | SD chip select — **see rewire note** |
 | `RHYTHM_SD_SCK_PIN` | 10 | SPI clock |
 | `RHYTHM_SD_MISO_PIN` | 9 | SPI MISO |
 | `RHYTHM_SD_MOSI_PIN` | 11 | SPI MOSI |
 | `RHYTHM_ENABLE_SD` | `1` | `0` = no SD / rhythm from flash only |
 | `RHYTHM_SD_SPI_HZ` | 20 MHz | SD SPI speed |
 
-> **⚠ Rewire required: move the SD module's CS lead from GPIO 12 to GPIO 21.**
+> **⚠ Rewire required: move the SD module's CS lead from GPIO 12 to GPIO 42.**
 > Until that wire moves, the SD card will not mount and song mode has no audio.
 
 **Why it moved.** GPIO 12 was both SD CS *and* `BTN_PINS[1]` = `IDX_LEFT[1]`, the
@@ -309,9 +309,15 @@ left blue key. SPI drives CS push-pull, so with a song loaded a press could not 
 the line down, and reads returned chip-select traffic — **phantom blue presses firing
 the relay and blue DMX at random during songs**. `pinOwnedBySd()` in `buttons.cpp`
 now masks any pin the SD peripheral owns (CS/SCK/MISO/MOSI, not just MISO as before),
-which stops the phantoms; moving CS to 21 is what gives the blue key back during song
-mode. GPIO 14 is *not* a valid alternative — it is the W5500 INT output. See
-`I2S_PIN_MAPPING.md` for the full map.
+which stops the phantoms; moving CS to 42 is what gives the blue key back during song
+mode.
+
+**Why 42:** on the actual breakout, the only terminals that can be grounded without
+crashing the board are GPIO **9, 10, 40, 41, 42** — and 9/10 are already SD MISO/SCK.
+All of 40/41/42 are full input+output on ESP32-S3 (input-only 34–39 is an
+*ESP32-classic* property, not S3). They are JTAG MTDO/MTDI/MTMS, but JTAG is already
+gone because MTCK (GPIO 39) is a key. GPIO 14 is *not* an alternative — it is the
+W5500 INT output — and GPIO 21 is not usably broken out. See `I2S_PIN_MAPPING.md`.
 
 ---
 

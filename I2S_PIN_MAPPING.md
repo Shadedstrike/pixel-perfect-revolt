@@ -19,7 +19,7 @@ and `src/lilygo_eth_w5500.cpp` before changing anything.
 | 15, 16, 38, 39, 46 | Keys | `config.cpp` `BTN_PINS` |
 | 17 | I2C SDA — LCD + PCA9685 | `config.h` |
 | 18 | I2C SCL — LCD + PCA9685 | `config.h` |
-| 21 | **SD CS** | `rhythm_sd_pins.h` |
+| 42 | **SD CS** | `rhythm_sd_pins.h` |
 
 Full key list: `BTN_PINS = {38, 12, 5, 7, 16, 46, 39, 2, 15, 8}`
 `IDX_LEFT = {0,1,2,3}` → GPIO 38, 12, 5, 7 · `IDX_RIGHT = {6,7,8,9}` → GPIO 39, 2, 15, 8
@@ -51,13 +51,29 @@ push-pull, so while a song was loaded:
 
 `pinOwnedBySd()` in `buttons.cpp` now masks any pin the SD peripheral owns, which
 stops the phantoms. But masking alone left the blue key dead during song mode, so
-**CS moved to GPIO 21**.
+**CS moved to GPIO 42**.
 
-**Action required: move the SD module's CS lead from GPIO 12 to GPIO 21.** Until
+**Action required: move the SD module's CS lead from GPIO 12 to GPIO 42.** Until
 that wire moves, the SD card will not mount.
 
-GPIO 21 is the W5500's MOSI — an *input* at the W5500, so nothing drives it from
-that end, and the W5500's own CS (45) is never asserted, so it ignores the traffic.
+### Why 42 — measured, not assumed
+
+On this breakout the only terminals that can be grounded **without crashing the
+board** are **GPIO 9, 10, 40, 41, 42**. 9 and 10 are already SD MISO/SCK, so the
+usable set is **40 / 41 / 42**.
+
+All three are full input+output GPIOs on ESP32-S3 — the input-only 34–39 range is an
+**ESP32-classic** property and does not apply to the S3. They are JTAG MTDO/MTDI/MTMS,
+but hardware JTAG is already unavailable because MTCK (GPIO 39) is a key, and
+debugging goes over USB-CDC.
+
+Rejected, for the record:
+
+| Candidate | Why not |
+|-----------|---------|
+| 14 | W5500 **INT** — an output *from* the Ethernet chip; would fight our CS |
+| 21 | Not usably broken out on this breakout (grounding it crashes the board) |
+| 45, 47, 48 | W5500 CS / MISO / SCK |
 
 ## Raspberry Pi breakout — terminal ↔ ESP32-S3 GPIO
 
@@ -93,9 +109,12 @@ and reports which one goes low:
 3. It prints `>>> GPIO N detected! (touched to GND) <<<`.
 4. Record terminal letter → GPIO N.
 
-That is how to locate **GPIO 12** (the left blue key, currently SD CS) and **GPIO 21**
-(the new SD CS). Do both before cutting anything, and write the result into the table
-above so the next person doesn't have to repeat it.
+That is how to locate **GPIO 12** (the left blue key, which currently also carries SD
+CS) and **GPIO 42** (the new SD CS). Do both before cutting anything, and write the
+result into the table above so the next person doesn't have to repeat it.
+
+Only **GPIO 9, 10, 40, 41, 42** can be grounded here without crashing the board, so
+those are the only terminals worth probing.
 
 The definitive source is LILYGO's schematic for T-ETH-Elite ESP32-S3, in the
 `/schematic` folder of
