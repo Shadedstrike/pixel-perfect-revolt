@@ -29,13 +29,16 @@ extern const int IDX_RIGHT[4];
 #define IDX_FRONT_L 4            // 16
 #define IDX_FRONT_R 5            // 46
 // Multiply RGB for 16/46 only (all modes: idle, rhythm, pressed).
-static constexpr float FRONT_LED_BRIGHTNESS_SCALE = 0.40f;
+// Base front-key (GPIO 16/46) brightness. 0.40 read as too dim in normal synth
+// mode; 0.55 lifts it without reaching the raw level that was blinding.
+static constexpr float FRONT_LED_BRIGHTNESS_SCALE = 0.55f;
 // Extra cut applied to the front keys (GPIO 16 / 46) *only in song mode*, where they
 // sit right under the player's eyes and read as blinding. Multiplies the above, so
 // song mode ends up at 0.40 x 0.80 = 0.32.
-// Was 0.80; a further 15% cut after seeing them on the piece. Multiplies the base
-// scale, so song mode is 0.40 x 0.68 = 0.272 vs 0.40 elsewhere.
-static constexpr float FRONT_LED_SONG_MODE_SCALE = 0.68f;
+// Multiplies the base scale. Retuned when the base went 0.40 -> 0.55 so song mode
+// lands in the same place it already did: 0.55 x 0.49 = 0.270, against 0.272 before.
+// Raising the base alone would have undone both song-mode dimming passes.
+static constexpr float FRONT_LED_SONG_MODE_SCALE = 0.49f;
 #define IDX_38 0
 #define IDX_11 6
 
