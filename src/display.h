@@ -95,6 +95,8 @@ void lcdSimonWin(uint32_t now, int round);
 // Idle "how to play" prompt, one gesture per `which` (0-3). Rotates through the
 // idle animation set so people discover the hidden modes without signage.
 void lcdIdleGesturePrompt(uint32_t now, uint8_t which);
+// Row-3 controls hint for the wave/scale select menu.
+void lcdVoiceSelectHint(void);
 // Forget the CGRAM slots this screen loaded (call if another screen overwrites 0-3).
 void lcdRetroEnterCountdownInvalidate(void);
 

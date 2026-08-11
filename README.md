@@ -64,7 +64,7 @@ Constants in `.cpp` files (e.g. `src/leds.cpp`, `src/rhythm_game.cpp`) require e
 
 ### Entering rhythm mode — the hold countdown
 
-Hold **all four top keys** (yellow 38 + 39, blue 42 + 2) for **5 s**. While held, the
+Hold the **four bottom keys** (yellow 38 + 39, blue 42 + 2 — slots 0/1, which the code calls "top" but sit at the bottom of the panel) for **5 s**. While held, the
 LCD is taken over by `lcdRetroEnterCountdown()`:
 
 ```
@@ -135,7 +135,7 @@ straight to the actuator link. It runs once per `loop()` **and** from inside
 
 | Setting | Value | What it changes |
 |---------|-------|-----------------|
-| `ACTUATOR_PROTO_VERSION` | `3` | Must match on both boards. Bump + reflash both when changing packet layout. |
+| `ACTUATOR_PROTO_VERSION` | `4` | Must match on both boards. Bump + reflash both when changing packet layout. |
 | `ACTUATOR_ON_*` | — | Command types: color ON/OFF, bubble party, bubble kill, idle DMX, idle end, RGB hold. |
 
 Color mapping (side buttons → actuator):
@@ -361,7 +361,7 @@ but its LED stays dark.
 
 | Constant | Default | What it changes |
 |----------|---------|-----------------|
-| `RG_ENTER_HOLD_MS` | 5000 | **All four top keys** — both yellow (GPIO 38 + 39) *and* both blue (GPIO 42 + 2) — held together 5 s → enter rhythm mode. Four keys so ordinary two-handed play can't trigger it. The `s_eightHoldStart` variable name is historic. See `rhythmEnterHold()`. |
+| `RG_ENTER_HOLD_MS` | 5000 | **All four bottom keys** (slots 0/1 — code calls them "top", panel puts them at the bottom) — both yellow (GPIO 38 + 39) *and* both blue (GPIO 42 + 2) — held together 5 s → enter rhythm mode. Four keys so ordinary two-handed play can't trigger it. The `s_eightHoldStart` variable name is historic. See `rhythmEnterHold()`. |
 | `RG_EXIT_HOLD_MENU_MS` | 3000 | Bottom pair hold → song menu |
 | `RG_EXIT_HOLD_IDLE_MS` | 4000 | Bottom pair hold → exit to synth idle |
 | `RG_UI_IDLE_TO_SYNTH_MS` | 25000 | Menu/results AFK → synth idle |

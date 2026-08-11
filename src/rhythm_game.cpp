@@ -291,13 +291,18 @@ static bool edgeOnRightColumn(const bool *edgeDown) {
   return false;
 }
 
-// Exit rhythm: both yellow keys (GPIO 38 left top + GPIO 39 right top), held together.
+// Exit rhythm: both yellow keys (GPIO 38 left + GPIO 39 right, slot 0), held together.
+// Slot 0 is physically the BOTTOM row of the panel despite the "top" naming.
 static bool rhythmYellowPairHold(const bool *down) { return down[IDX_38] && down[IDX_11]; }
 
-// Enter rhythm: all four top keys — both yellow (GPIO 38 / 39) AND both blue
-// (GPIO 42 / 2). Four keys rather than two so it cannot be triggered by ordinary
-// two-handed play. Exit stays on the yellow pair, which is a subset — harmless,
-// since the exit check only runs once the phase is no longer RG_NORMAL.
+// Enter rhythm: both yellow (GPIO 38 / 39) AND both blue (GPIO 42 / 2). Four keys
+// rather than two so it cannot be triggered by ordinary two-handed play. Exit stays
+// on the yellow pair, which is a subset — harmless, since the exit check only runs
+// once the phase is no longer RG_NORMAL.
+//
+// NOTE ON NAMING: these are slots 0 and 1, which the code calls "top", but on the
+// physical panel they sit at the BOTTOM. Index order and physical position are
+// reversed. User-facing text must say bottom; comments here say slot.
 static bool rhythmEnterHold(const bool *down) {
   return down[IDX_LEFT[0]] && down[IDX_LEFT[1]] && down[IDX_RIGHT[0]] && down[IDX_RIGHT[1]];
 }
@@ -1108,7 +1113,7 @@ void rhythmGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
         s_enterHeldMs = 0;
         s_menuIdx = 0;
         s_rhythmUiLastMs = now;
-        Serial.println("[RHYTHM] Enter retro mode (4 top keys held >=5s)");
+        Serial.println("[RHYTHM] Enter retro mode (4 bottom keys held >=5s)");
       }
     } else {
       s_eightHoldStart = 0;

@@ -888,9 +888,11 @@ void loop(){
       lastLCD = now;
     } else if (s_voiceSelectKind == 2) {
       lcdPrintScaleSelection(scaleIndex, now);
+      lcdVoiceSelectHint();
       lastLCD = now;
     } else if (s_voiceSelectKind == 1) {
       lcdPrintWaveShapePreview(audioGetWaveShape());
+      lcdVoiceSelectHint();
       lastLCD = now;
     } else if (s_voiceCountdownKind != 0) {
       lcdHoldCountdown(now, s_voiceCountdownHeldMs, VOICE_HOLD_MS,
