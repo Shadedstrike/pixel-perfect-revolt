@@ -81,8 +81,11 @@ void identifyBreakoutPins(){
   // Note: The old list included 22–34 etc. but those were all skipped during init, so only
   // ~7 pins ever monitored. This list is trimmed to pins that actually init, plus input-only
   // 35–42 (ok for "short to GND" identification on a running chip).
+  // 12 is included on purpose: it is the old SD CS / left blue key, and 21 is the
+  // new SD CS. Identifying both terminals is what the CS rewire needs. Nothing
+  // else runs in this mode, so probing 12 as an input is safe here.
   int testPins[] = {
-      4,  6,  9,  10, 13, 14, 21,
+      4,  6,  9,  10, 12, 13, 14, 21,
       35, 36, 37, 40, 41, 42, // 39 = button — skip below
   };
   int numPins = sizeof(testPins) / sizeof(testPins[0]);
@@ -107,8 +110,8 @@ void identifyBreakoutPins(){
     
     // Skip I2C and button pins
     if(pin == 17 || pin == 18 || // I2C
-       pin == 38 || pin == 12 || pin == 5 || pin == 7 || pin == 16 || pin == 46 || 
-       pin == 39 || pin == 2 || pin == 15 || pin == 8){ // Buttons
+       pin == 38 || pin == 5 || pin == 7 || pin == 16 || pin == 46 ||
+       pin == 39 || pin == 2 || pin == 15 || pin == 8){ // Buttons (12 probed on purpose)
       Serial.printf("SKIP (I2C or button)\n");
       continue;
     }

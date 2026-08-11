@@ -58,10 +58,15 @@ void setup(){
   Serial.println("Serial initialized — use tags [HB] [ESPNOW] [ACT] to filter mentally.");
   delay(500);
   
-  // GPIO testing - uncomment to enable
-  // identifyBreakoutPins();
+  // Breakout pin identification. Build with -DPIN_ID_MODE=1 to map which breakout
+  // terminal is which ESP32-S3 GPIO (the silkscreen shows Raspberry Pi names, which
+  // do not correspond). Short a terminal to GND and it prints the GPIO number.
+  // Blocks forever — reset, then reflash without the flag for normal operation.
+#if defined(PIN_ID_MODE) && PIN_ID_MODE
+  identifyBreakoutPins();
+  return;
+#endif
   // testButtonGPIOs();
-  // return;
 
   // Normal operation starts here
   Serial.printf("I2S Pins: BCLK=%d, LRCLK=%d, DATA=%d\n", I2S_BCLK, I2S_LRCK, I2S_DATA);
