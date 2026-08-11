@@ -110,8 +110,13 @@ static void onEspnowRecv(const uint8_t *mac, const uint8_t *data, int len) {
   } else if (pkt.on == ACTUATOR_ON_IDLE_END) {
     Serial.printf("[ESPNOW] rx IDLE_END seq=%u\n", (unsigned)pkt.seq);
   } else if (pkt.on == ACTUATOR_ON_RGB_HOLD) {
-    Serial.printf("[ESPNOW] rx RGB_HOLD R=%u G=%u B=%u amber=%u seq=%u\n", (unsigned)pkt.level_r, (unsigned)pkt.level_g,
-                  (unsigned)pkt.level_b, (unsigned)pkt.color, (unsigned)pkt.seq);
+    // 20 Hz during a hold — log 1 in 20 so it does not bury [ACT]/[RLY]/[SAFE].
+    static uint8_t rgbHoldLogSkip = 0;
+    if (++rgbHoldLogSkip >= 20) {
+      rgbHoldLogSkip = 0;
+      Serial.printf("[ESPNOW] rx RGB_HOLD R=%u G=%u B=%u amber=%u seq=%u (1/20)\n", (unsigned)pkt.level_r,
+                    (unsigned)pkt.level_g, (unsigned)pkt.level_b, (unsigned)pkt.color, (unsigned)pkt.seq);
+    }
   } else {
     Serial.printf("[ESPNOW] rx from %s color=%s on=%u seq=%u\n", macStr, serialStatusColorNameU8(pkt.color),
                   (unsigned)pkt.on, (unsigned)pkt.seq);

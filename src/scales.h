@@ -31,6 +31,10 @@ extern uint8_t scaleIndex;
 void buildScaleHz();
 int degreeIndexForSlot(int slot);
 float scaleHzAtIdx(int idx);
+// True if this degree index already sits at the synth Hz ceiling — shifting
+// further up produces no audible change. Callers use this to stop the pitch
+// offset running away past the point where the frequency stops rising.
+bool scaleIdxAtCeiling(int idx);
 const char* noteNameFromHz(float hz);
 
 #endif // SCALES_H

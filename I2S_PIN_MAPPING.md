@@ -1,105 +1,110 @@
-# I2S Pin Mapping: LILYGO T-ETH Elite → Raspberry Pi Breakout → ESP32-S3 GPIO
+# Controller GPIO map (ESP32-S3, LILYGO T-ETH Elite)
 
-## Currently Used GPIOs
-- **I2C**: GPIO 17 (SDA), GPIO 18 (SCL)  
-- **Buttons**: GPIO 2, 5, 7, 8, 9, 11, 12, 16, 38, 46
-- **Avoid**: GPIO 0, 1, 3, 19-20, 22, 23, 25, 26-34, 35-42, 43-48 (strapping/USB/SPI flash/input-only)
+This file used to list an I2S plan that was never what shipped. Below is the map
+as it exists in code. Verify against `src/config.h`, `include/rhythm_sd_pins.h`
+and `src/lilygo_eth_w5500.cpp` before changing anything.
 
-## Available Safe GPIOs for I2S
-✅ **GPIO 4, 6, 10, 13, 14, 15, 21**
+## In use
 
-## Recommended I2S Configuration (Already Set in Code)
-| I2S Signal | ESP32-S3 GPIO | Breakout Terminal to Find | Purpose |
-|------------|---------------|---------------------------|---------|
-| **I2S_DATA** (PCMdin) | **GPIO 13** | **Use pin ID function** | Serial data to DAC |
-| **I2S_LRCK** (PCMfs) | **GPIO 15** | **Use pin ID function** | Left/Right clock |
-| **I2S_BCLK** | **GPIO 14** | **Use pin ID function** | Bit clock |
+| GPIO | Function | Defined in |
+|------|----------|------------|
+| 2, 5, 7, 8 | Keys — 2/5/7/8 (right idx 7, left idx 2/3, right idx 9) | `config.cpp` `BTN_PINS` |
+| 4 | I2S DATA (DIN) | `config.h` `I2S_DATA` |
+| 6 | I2S LRCK (WSEL) | `config.h` `I2S_LRCK` |
+| 9 | SD MISO | `rhythm_sd_pins.h` |
+| 10 | SD SCK | `rhythm_sd_pins.h` |
+| 11 | SD MOSI | `rhythm_sd_pins.h` |
+| 12 | Key — left blue (`IDX_LEFT[1]`) | `config.cpp` `BTN_PINS[1]` |
+| 13 | I2S BCLK | `config.h` `I2S_BCLK` |
+| 15, 16, 38, 39, 46 | Keys | `config.cpp` `BTN_PINS` |
+| 17 | I2C SDA — LCD + PCA9685 | `config.h` |
+| 18 | I2C SCL — LCD + PCA9685 | `config.h` |
+| 21 | **SD CS** | `rhythm_sd_pins.h` |
 
-## Raspberry Pi Breakout Board Mapping
+Full key list: `BTN_PINS = {38, 12, 5, 7, 16, 46, 39, 2, 15, 8}`
+`IDX_LEFT = {0,1,2,3}` → GPIO 38, 12, 5, 7 · `IDX_RIGHT = {6,7,8,9}` → GPIO 39, 2, 15, 8
+`IDX_FRONT_L = 4` → GPIO 16 · `IDX_FRONT_R = 5` → GPIO 46
 
-**⚠️ IMPORTANT**: The breakout board labels are **Raspberry Pi GPIO numbers/functions**, NOT ESP32-S3 GPIO numbers! The actual ESP32-S3 GPIO mapping may be different. You need to use the pin identification function to find which ESP32-S3 GPIO each terminal connects to.
+## Reserved — do not reuse
 
-### Left Side Terminals (Raspberry Pi Function Labels)
-- **Terminal A**: PCMdout (Raspberry Pi function - find ESP32-S3 GPIO via pin ID)
-- **Terminal B**: PCMdin (Raspberry Pi function - find ESP32-S3 GPIO via pin ID) ⚠️ Crashes!
-- **Terminal C**: PCMfs (Raspberry Pi function - find ESP32-S3 GPIO via pin ID) ⚠️ Crashes!
-- **Terminal D**: PWM1 (Raspberry Pi function - find ESP32-S3 GPIO via pin ID)
-- **Terminal E**: PWM0 (Raspberry Pi function - find ESP32-S3 GPIO via pin ID)
+| GPIO | Why |
+|------|-----|
+| 14 | W5500 **INT** — an output *from* the W5500; contends with anything we drive |
+| 45, 47, 48 | W5500 CS / MISO / SCK |
+| 19, 20 | USB D− / D+ (`ARDUINO_USB_CDC_ON_BOOT=1`) |
+| 43, 44 | UART0 TX / RX |
+| 26–32 | SPI flash |
+| 33–37 | Reserved if the module has octal PSRAM |
+| 0, 3, 45, 46 | Strapping pins (46 is used as a key anyway — it reads fine, but never drive it at boot) |
 
-**Note**: Terminal D maps to PCMdout (you discovered this). Use pin identification to find which ESP32-S3 GPIO it actually connects to.
+Ethernet is compiled out (`LILYGO_ETH_BOARD 0` in `mqtt_config.h`) but the W5500 is
+still physically wired, which is why its pins stay reserved.
 
-### Right Side Terminals (Raspberry Pi GPIO Numbers)
-From top (T) to bottom (A):
-- **Terminal T**: +5V
-- **Terminal S**: GND
-- **Terminal R**: 3.3V
-- **Terminal Q**: GPIO18 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID)
-- **Terminal P**: GPIO23 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID)
-- **Terminal O**: GPIO24 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID)
-- **Terminal N**: GPIO25 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID) ⚠️ Crashes!
-- **Terminal M**: GPIO16 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID)
-- **Terminal L**: GPIO26 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID)
-- **Terminal K**: GPIO06 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID)
-- **Terminal J**: GPIO05 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID)
-- **Terminal I**: GPIO17 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID)
-- **Terminal H**: ECLK
-- **Terminal G**: GPIO27 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID)
-- **Terminal F**: EDAT
-- **Terminal E**: GPIO22 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID)
-- **Terminal D**: GPIO04 (Raspberry Pi GPIO - find ESP32-S3 GPIO via pin ID)
-- **Terminal C**: 3.3V
-- **Terminal B**: GND
-- **Terminal A**: +5V
+## The GPIO 12 / SD CS conflict (fixed — needs a rewire)
 
-**⚠️ CRITICAL**: The labels are Raspberry Pi references. The actual ESP32-S3 GPIO mapping must be discovered using the pin identification function!
+SD CS was on **GPIO 12**, which is also the **left blue key**. SPI drives CS
+push-pull, so while a song was loaded:
 
-## How to Find ESP32-S3 GPIO Mapping for Each Terminal
+- a press could not pull the line down — the SPI driver held it
+- reads returned chip-select traffic, i.e. **phantom blue presses** that fired the
+  relay and blue DMX at random during songs
 
-**The breakout board labels are Raspberry Pi references - you need to find the actual ESP32-S3 GPIO mapping!**
+`pinOwnedBySd()` in `buttons.cpp` now masks any pin the SD peripheral owns, which
+stops the phantoms. But masking alone left the blue key dead during song mode, so
+**CS moved to GPIO 21**.
 
-1. **Run pin identification**: The code already has `identifyBreakoutPins()` enabled
-2. **Touch terminals to GND**: Systematically touch each terminal (both left and right sides) to GND
-3. **Check serial output**: It will show ">>> GPIO X detected!" when you touch the terminal
-4. **Map the results**: Write down which terminal letter corresponds to which ESP32-S3 GPIO
+**Action required: move the SD module's CS lead from GPIO 12 to GPIO 21.** Until
+that wire moves, the SD card will not mount.
 
-**Example**: If you touch terminal D and it shows ">>> GPIO 13 detected!", then terminal D maps to ESP32-S3 GPIO 13.
+GPIO 21 is the W5500's MOSI — an *input* at the W5500, so nothing drives it from
+that end, and the W5500's own CS (45) is never asserted, so it ignores the traffic.
 
-**Goal**: Find terminals that map to safe ESP32-S3 GPIOs: **4, 6, 10, 13, 14, 15, 21**
+## Raspberry Pi breakout — terminal ↔ ESP32-S3 GPIO
 
-## Finding Safe Terminals for I2S
+**The breakout's silkscreen labels are Raspberry Pi GPIO numbers and functions, NOT
+ESP32-S3 GPIO numbers.** They do not correspond. The terminal→ESP32-S3 mapping has
+never been recorded — it has to be measured on the bench (procedure below).
 
-Since terminal D maps to PCMdout (Raspberry Pi function), use pin identification to find which ESP32-S3 GPIO it connects to. Then find terminals for GPIO 13, 14, 15:
+Terminal labels as printed (preserved from the original notes):
 
-### Step 1: Identify Terminal D's ESP32-S3 GPIO
-- Touch terminal D (PCMdout) to GND
-- Check serial output: ">>> GPIO X detected!"
-- If it's GPIO 13, 14, 15, or another safe GPIO (4, 6, 10, 21), you can use it!
+**Left side (Pi function labels):**
+A `PCMdout` · B `PCMdin` ⚠️ · C `PCMfs` ⚠️ · D `PWM1` · E `PWM0`
+(⚠️ = observed to crash the board when driven — cause never established.)
+Terminal D was found to map to PCMdout.
 
-### Step 2: Find Terminals for GPIO 13, 14, 15
-| I2S Signal | ESP32-S3 GPIO | Breakout Terminal | How to Find |
-|------------|---------------|-------------------|-------------|
-| I2S_DATA | GPIO 13 | **Find via pin ID** | Touch terminals until you see "GPIO 13 detected!" |
-| I2S_LRCK | GPIO 15 | **Find via pin ID** | Touch terminals until you see "GPIO 15 detected!" |
-| I2S_BCLK | GPIO 14 | **Find via pin ID** | Touch terminals until you see "GPIO 14 detected!" |
+**Right side, top (T) to bottom (A), Pi GPIO numbers:**
 
-**Alternative**: If terminal D maps to a safe GPIO (like GPIO 13), you can use it! Then find two more terminals for GPIO 14 and 15.
+| T | S | R | Q | P | O | N | M | L | K |
+|---|---|---|---|---|---|---|---|---|---|
+| +5V | GND | 3.3V | GPIO18 | GPIO23 | GPIO24 | GPIO25 ⚠️ | GPIO16 | GPIO26 | GPIO06 |
 
-## Purple LILYGO Clone DAC Connections
+| J | I | H | G | F | E | D | C | B | A |
+|---|---|---|---|---|---|---|---|---|---|
+| GPIO05 | GPIO17 | ECLK | GPIO27 | EDAT | GPIO22 | GPIO04 | 3.3V | GND | +5V |
 
-For your purple LILYGO clone DAC (UDA1334A or similar):
+### Finding which terminal is a given ESP32-S3 GPIO
 
-| DAC Pin | Connect To | ESP32-S3 GPIO | Breakout Terminal |
-|---------|------------|---------------|-------------------|
-| **BCLK** | I2S_BCLK | GPIO 14 | Find via pin ID |
-| **LRCLK/WS** | I2S_LRCK | GPIO 15 | Find via pin ID |
-| **DIN** | I2S_DATA | GPIO 13 | Find via pin ID |
-| **GND** | GND | - | Any GND terminal |
-| **VCC** | 3.3V or 5V | - | 3.3V or +5V terminal |
+The firmware has a pin-identification mode (`src/debug.cpp`) that pulls every GPIO up
+and reports which one goes low:
 
-## Next Steps
+1. Run it and watch the serial monitor for
+   `Touch PCMfs or PCMdin pins on the breakout board to GND to identify them.`
+2. Short a breakout terminal to GND with a jumper.
+3. It prints `>>> GPIO N detected! (touched to GND) <<<`.
+4. Record terminal letter → GPIO N.
 
-1. ✅ Code is already configured for GPIO 13, 14, 15
-2. 🔍 Run pin identification to find which terminals map to GPIO 13, 14, 15
-3. 🔌 Connect your DAC to those terminals (NOT the left side PCMfs/PCMdin terminals!)
-4. ✅ Test I2S audio output
+That is how to locate **GPIO 12** (the left blue key, currently SD CS) and **GPIO 21**
+(the new SD CS). Do both before cutting anything, and write the result into the table
+above so the next person doesn't have to repeat it.
 
+The definitive source is LILYGO's schematic for T-ETH-Elite ESP32-S3, in the
+`/schematic` folder of
+[Xinyuan-LilyGO/LilyGO-T-ETH-Series](https://github.com/Xinyuan-LilyGO/LilyGO-T-ETH-Series).
+The published docs only state that the 40-pin header "follows the Raspberry Pi pinout as
+closely as possible" with 23 GPIOs exposed — they do not give the per-pin mapping.
+
+## Picking a new pin later
+
+Anything not listed above. Check `pinOwnedBySd()` and `BTN_PINS` first — a pin that
+is both a key and a peripheral line cannot be read as a key while that peripheral
+is active, and that failure looks exactly like a firmware bug.

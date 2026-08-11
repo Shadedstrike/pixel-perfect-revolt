@@ -13,6 +13,8 @@
 #include "dmx_output.h"
 #include "espnow_actuator.h"
 #include "motor_output.h"
+#include "relay_config.h"
+#include "relay_output.h"
 #include "serial_status.h"
 #include "solenoid_output.h"
 #include "serial_log.h"
@@ -35,6 +37,8 @@ static void printBootConfig() {
                 (int)MOTOR_YELLOW_IN1, (int)MOTOR_YELLOW_IN2);
   Serial.printf("  Solenoids: MCP23017 SDA=%d SCL=%d  ch0=red ch1=green ch2=blue ch3=yellow\n", (int)I2C_SDA,
                 (int)I2C_SCL);
+  Serial.printf("  Relay: GPIO%d active-%s  closed while any color held\n", (int)RELAY_PIN,
+                RELAY_ACTIVE_LOW ? "LOW" : "HIGH");
   Serial.printf("  DMX: TX=%d RX=%d RTS=%d  par@%u  bubble@%u (6ch)\n", (int)DMX_TX_PIN, (int)DMX_RX_PIN,
                 (int)DMX_RTS_PIN, (unsigned)DMX_PAR_START_ADDR, (unsigned)DMX_BUBBLE_ADDR);
   Serial.println("[BOOT] Waiting for ESP-NOW from controller...");
@@ -65,7 +69,7 @@ static void applyActuatorColor(ActuatorColor color, bool on) {
     Serial.print(" | mot=—");
   }
 
-  if (color != ACTUATOR_COLOR_BLUE)
+  if (color != ACTUATOR_COLOR_BLUE || SOLENOID_BLUE_ENABLED)
     solenoidOutputSetChannel((uint8_t)color, on);
   else
     Serial.print(" | sol=—(blue disabled)");
@@ -74,6 +78,10 @@ static void applyActuatorColor(ActuatorColor color, bool on) {
     Serial.println(" | ignored");
     return;
   }
+
+  // Every color hold closes the relay — including blue, whose solenoid is off.
+  relayOutputSetColor(color, on);
+  Serial.printf(" | relay=%s", relayOutputActive() ? "CLOSED" : "OPEN");
 
   if (dmxOutputReady()) {
     dmxOutputSetColorHold(color, on);
@@ -95,8 +103,9 @@ static void onBubblePartyCmd(const ActuatorCmdPacket *pkt) {
 static bool s_failsafeTripped = false;
 
 static void actuatorForceAllOutputsOff(const char *reason) {
-  Serial.printf("[SAFE] %s — solenoids/motors/fan OFF\n", reason);
+  Serial.printf("[SAFE] %s — solenoids/relay/motors/fan OFF\n", reason);
   solenoidOutputAllOff();
+  relayOutputAllOff();
   motorOutputAllOff();
   if (dmxOutputReady())
     dmxOutputForceSafeOutputs();
@@ -107,7 +116,8 @@ static void actuatorRxWatchdog(uint32_t now) {
     return;
   if (now - s_lastRxMs < (uint32_t)ACTUATOR_RX_FAILSAFE_MS)
     return;
-  if (!solenoidOutputAnyOn())
+  // Relay too: a blue-only hold leaves every solenoid off but the relay closed.
+  if (!solenoidOutputAnyOn() && !relayOutputActive())
     return;
   if (s_failsafeTripped)
     return;
@@ -173,10 +183,11 @@ static void debugHeartbeat(uint32_t now) {
   const char *initStr = solenoidOutputReady() ? "OK" : "FAIL";
 
   Serial.printf("[HB] ACTUATOR  ESPNOW=%s  I2C_0x%02X=%s(init=%s)  SDA=%d SCL=%d  STBY=%s  DMX=%s  "
-                "rx=%u  last=%s %s  ago=%lums  ch=%u  mac=%s  up=%lus\n",
+                "RLY=%s(held=0x%X)  rx=%u  last=%s %s  ago=%lums  ch=%u  mac=%s  up=%lus\n",
                 espnowActuatorReady() ? "OK" : "DOWN", (unsigned)MCP23017_ADDR, i2cStr, initStr, (int)I2C_SDA,
                 (int)I2C_SCL, motorOutputStbyLevel() < 0 ? "?" : (motorOutputStbyEnabled() ? "H" : "L"),
-                dmxOutputReady() ? "OK" : "FAIL", (unsigned)s_rxCount, lastColor, s_lastOn ? "ON" : "OFF",
+                dmxOutputReady() ? "OK" : "FAIL", relayOutputActive() ? "CLOSED" : "OPEN",
+                (unsigned)relayOutputHeldMask(), (unsigned)s_rxCount, lastColor, s_lastOn ? "ON" : "OFF",
                 s_lastRxMs ? (unsigned long)sinceRx : 0UL, (unsigned)ESPNOW_WIFI_CHANNEL,
                 WiFi.macAddress().c_str(), (unsigned long)(now / 1000));
 
@@ -189,8 +200,11 @@ static void debugAlive(uint32_t now) {
   if (now - lastAlive < 2000)
     return;
   lastAlive = now;
-  Serial.printf("[ALIVE] up=%lus  usb=%s  setup=%s\n", (unsigned long)(now / 1000), (bool)Serial ? "yes" : "no",
-                s_setupDone ? "done" : "running");
+  // Relay state here too (every 2s) — [HB] is only every 5s and easy to miss.
+  Serial.printf("[ALIVE] up=%lus  usb=%s  setup=%s  RLY=%s(held=0x%X) GPIO%d=%d  SOL=%s\n",
+                (unsigned long)(now / 1000), (bool)Serial ? "yes" : "no", s_setupDone ? "done" : "running",
+                relayOutputActive() ? "CLOSED" : "OPEN", (unsigned)relayOutputHeldMask(), (int)RELAY_PIN,
+                digitalRead(RELAY_PIN), solenoidOutputAnyOn() ? "ON" : "off");
 }
 
 void setup() {
@@ -199,11 +213,19 @@ void setup() {
   Serial.println("[BOOT] solenoid-node reset — non-blocking USB serial @ 115200");
 
   serialStatusBanner("ACTUATOR (ESP-NOW — motors + solenoids + DMX)");
+  // Relay first: park it open before anything else can glitch the pin.
+  Serial.println("[BOOT] relay GPIO early init...");
+  relayOutputEarlyInit();
+
   Serial.println("[BOOT] motor GPIO early init...");
   motorOutputEarlyInit();
 
   Serial.println("[BOOT] motor drivers...");
   motorOutputBegin();
+
+  Serial.println("[BOOT] relay...");
+  relayOutputBegin();
+  relayOutputSelfTest();
 
   Serial.println("[BOOT] MCP23017 / I2C...");
   s_solOk = solenoidOutputBegin();
@@ -215,6 +237,7 @@ void setup() {
   s_espOk = espnowActuatorBeginRx(onEspnowCmd);
 
   solenoidOutputAllOff();
+  relayOutputAllOff();
   if (s_dmxOk)
     dmxOutputBootSafeState();
 

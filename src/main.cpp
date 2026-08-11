@@ -219,6 +219,56 @@ void setup(){
   lcdPrintStatus(SCALES[scaleIndex].name, 0,0, 0,0);
 }
 
+// ===================== Fast input path =====================
+// Buttons used to be sampled once per loop(). In song mode the loop also decodes
+// MP3 and drives the LCD over I2C, and a tap that begins and ends inside one of
+// those long frames was never observed at all — so no ESP-NOW ON/OFF was sent and
+// the relay/solenoids simply did not react. This polls independently of frame
+// length and latches edges so nothing is dropped.
+static bool s_fpLevel[10] = {};
+static bool s_fpPendDown[10] = {};
+static bool s_fpPendUp[10] = {};
+static uint32_t s_fpWorstGapMs = 0;
+
+void inputFastPoll(uint32_t now) {
+  static uint32_t lastPollMs = 0;
+  if (lastPollMs != 0) {
+    const uint32_t gap = now - lastPollMs;
+    if (gap > s_fpWorstGapMs)
+      s_fpWorstGapMs = gap;
+  }
+  lastPollMs = now;
+
+  for (int i = 0; i < 10; i++) {
+    bool ed = false, eu = false;
+    s_fpLevel[i] = readLevelDebounced(BTN_PINS[i], ed, eu);
+    if (ed) s_fpPendDown[i] = true;
+    if (eu) s_fpPendUp[i] = true;
+  }
+
+  // Straight to the radio — does not wait for the next loop() iteration.
+  actuatorLinkSyncSideColumnHolds(s_fpLevel);
+}
+
+void inputFastPollTake(int i, bool &level, bool &edgeDown, bool &edgeUp) {
+  if (i < 0 || i >= 10) {
+    level = edgeDown = edgeUp = false;
+    return;
+  }
+  level = s_fpLevel[i];
+  edgeDown = s_fpPendDown[i];
+  edgeUp = s_fpPendUp[i];
+  s_fpPendDown[i] = false;
+  s_fpPendUp[i] = false;
+}
+
+uint32_t inputFastPollWorstGapMs(bool reset) {
+  const uint32_t v = s_fpWorstGapMs;
+  if (reset)
+    s_fpWorstGapMs = 0;
+  return v;
+}
+
 // ===================== Loop =====================
 int8_t leftDegOff=0, rightDegOff=0;
 uint32_t lastCenterScaleHold=0; bool centerHoldLatched=false;
@@ -246,13 +296,18 @@ void loop(){
   if (!rhythmGameOwnsAudioOutput())
     buttonsRefreshSdSharedPins();
   
-  // scan buttons
+  // Sample + push to the actuator link. Also runs inside the rhythm audio pump,
+  // so a tap that starts and ends between two main-loop iterations is still seen.
+  inputFastPoll(now);
+
+  // Consume what the fast poll latched. Edges are sticky until read here, so a
+  // press/release pair that happened mid-frame is not lost.
   bool anyDown=false;
   for(int i=0;i<10;i++){
     bool ed=false, eu=false;
-    bool lvl=readLevelDebounced(BTN_PINS[i], ed, eu);
-    edgeDownArr[i]=ed; edgeUpArr[i]=eu; down[i]=lvl;
-    if (lvl) anyDown=true;
+    inputFastPollTake(i, down[i], ed, eu);
+    edgeDownArr[i]=ed; edgeUpArr[i]=eu;
+    if (down[i]) anyDown=true;
     if (ed) {
       lastPressMs=now;
       Serial.printf("[BTN] GPIO %d (idx %d) PRESSED\n", BTN_PINS[i], i);
@@ -263,7 +318,18 @@ void loop(){
     }
   }
 
-  actuatorLinkSyncSideColumnHolds(down);
+  // Worst gap between input samples. This is the number that decides whether a
+  // fast tap can be missed — if it stays low in song mode, the fix is working.
+  {
+    static uint32_t lastGapLog = 0;
+    if (now - lastGapLog >= 5000) {
+      lastGapLog = now;
+      Serial.printf("[INPUT] worst poll gap %lums (song=%d)\n",
+                    (unsigned long)inputFastPollWorstGapMs(true),
+                    rhythmGameOwnsAudioOutput() ? 1 : 0);
+    }
+  }
+
   actuatorLinkBubbleHoldCheck(down, now);
 
   // Pump rhythm audio before game logic so stream-active checks see a fed decoder.
@@ -343,7 +409,15 @@ void loop(){
   // Continuous shifting while button is held (no clicking)
   static uint32_t lastPitchShiftTime = 0;
   const uint32_t PITCH_SHIFT_INTERVAL_MS = 122; // Shift every 122ms (23% faster than 150ms)
-  
+
+  // Topmost pressed slot per side — same priority the frequency calc below uses.
+  // The offset stops climbing once THAT note hits the Hz ceiling; without this the
+  // offset keeps counting to +24 while the pitch stays put, and the user then has
+  // to press down many times before anything audibly changes.
+  int leftTopSlot = -1, rightTopSlot = -1;
+  for (int s = 3; s >= 0; s--) { if (down[IDX_LEFT[s]])  { leftTopSlot  = s; break; } }
+  for (int s = 3; s >= 0; s--) { if (down[IDX_RIGHT[s]]) { rightTopSlot = s; break; } }
+
   if (leftSideActive){
     if (down[IDX_FRONT_L] && (now - lastPitchShiftTime >= PITCH_SHIFT_INTERVAL_MS)) { 
       // 16 held: shift left side DOWN continuously
@@ -354,11 +428,15 @@ void loop(){
       }
     }
     if (down[IDX_FRONT_R] && (now - lastPitchShiftTime >= PITCH_SHIFT_INTERVAL_MS)) { 
-      // 46 held: shift left side UP continuously
-      if (leftDegOff <  24) {
+      // 46 held: shift left side UP continuously (stops at the Hz ceiling)
+      const bool atCeil = leftTopSlot >= 0 &&
+                          scaleIdxAtCeiling(degreeIndexForSlot(leftTopSlot) + leftDegOff + 1);
+      if (leftDegOff < 24 && !atCeil) {
         leftDegOff++;
         lastPitchShiftTime = now;
         Serial.printf("[PITCH] Left offset: %+d (shifting up)\n", leftDegOff);
+      } else if (atCeil) {
+        lastPitchShiftTime = now;
       }
     }
   }
@@ -372,11 +450,15 @@ void loop(){
       }
     }
     if (down[IDX_FRONT_R] && (now - lastPitchShiftTime >= PITCH_SHIFT_INTERVAL_MS)) { 
-      // 46 held: shift right side UP continuously
-      if (rightDegOff <  24) {
+      // 46 held: shift right side UP continuously (stops at the Hz ceiling)
+      const bool atCeil = rightTopSlot >= 0 &&
+                          scaleIdxAtCeiling(degreeIndexForSlot(rightTopSlot) + rightDegOff + 1);
+      if (rightDegOff < 24 && !atCeil) {
         rightDegOff++;
         lastPitchShiftTime = now;
         Serial.printf("[PITCH] Right offset: %+d (shifting up)\n", rightDegOff);
+      } else if (atCeil) {
+        lastPitchShiftTime = now;
       }
     }
   }

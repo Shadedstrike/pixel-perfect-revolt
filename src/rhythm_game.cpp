@@ -1,4 +1,5 @@
 #include "rhythm_game.h"
+#include "buttons.h"
 #include "config.h"
 #include "display.h"
 #include "leds.h"
@@ -1342,6 +1343,10 @@ bool rhythmGameSuppressNormalUi() { return s_phase != RG_NORMAL; }
 void rhythmGameAudioPump() {
   if (s_phase == RG_PLAYING)
     rhythmStreamLoop();
+  // Song mode stretches loop() well past a fast tap. The pump runs often during
+  // play, so sampling here keeps relay/solenoid response independent of frame
+  // length. Edges latch for loop() to consume, so nothing is double-counted.
+  inputFastPoll(millis());
 }
 
 void rhythmGameAudioPumpN(int n) {

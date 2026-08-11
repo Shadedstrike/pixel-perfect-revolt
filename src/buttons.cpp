@@ -93,13 +93,37 @@ void buttonsRefreshSdSharedPins() {
   }
 }
 
+#if RHYTHM_ENABLE_SD
+// A pin the SD/SPI peripheral is actively driving cannot be read as a button.
+// This covers every SD line, not just MISO: BTN_PINS[1] is GPIO 12, which is
+// also RHYTHM_SD_CS_PIN, and CS toggles LOW on every SD transaction. Sampling it
+// while SD is mounted reads chip-select traffic as phantom presses on the left
+// blue key — which would fire the relay and blue DMX at random during songs.
+static inline bool pinOwnedBySd(int pin) {
+  if (!rhythmMp3SdMounted())
+    return false;
+#if RHYTHM_SD_MISO_PIN >= 0
+  if (pin == RHYTHM_SD_MISO_PIN) return true;
+#endif
+#if RHYTHM_SD_MOSI_PIN >= 0
+  if (pin == RHYTHM_SD_MOSI_PIN) return true;
+#endif
+#if RHYTHM_SD_SCK_PIN >= 0
+  if (pin == RHYTHM_SD_SCK_PIN) return true;
+#endif
+#if RHYTHM_SD_CS_PIN >= 0
+  if (pin == RHYTHM_SD_CS_PIN) return true;
+#endif
+  return false;
+}
+#endif
+
 bool readLevelDebounced(int pin, bool &edgeDown, bool &edgeUp) {
   debounceInitOnce();
   int idx = pin & 0x3F;
-#if RHYTHM_ENABLE_SD && (RHYTHM_SD_MISO_PIN >= 0)
-  // Elite/Lite: SD MISO shares a key GPIO; the line is not a valid pull-up button while SD is mounted.
-  if (pin == RHYTHM_SD_MISO_PIN && rhythmMp3SdMounted()) {
-    g_last[idx] = 1u;
+#if RHYTHM_ENABLE_SD
+  if (pinOwnedBySd(pin)) {
+    g_last[idx] = 1u; // parked released — never report an edge from SPI traffic
     g_tchg[idx] = millis();
     edgeDown = edgeUp = false;
     return false;

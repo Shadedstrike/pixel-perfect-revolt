@@ -62,6 +62,26 @@ Controller overrides go under `[env:esp32-s3-devkitc-1]`. Actuator overrides und
 
 Constants in `.cpp` files (e.g. `src/leds.cpp`, `src/rhythm_game.cpp`) require editing source directly.
 
+### Input timing — `inputFastPoll()` (`src/main.cpp`)
+
+Buttons used to be sampled once per `loop()`. In song mode that same loop decodes MP3
+and drives the LCD over I2C, so a tap that began and ended inside one long frame was
+never observed — no ESP-NOW ON/OFF was sent and **the relay and solenoids did not react
+to fast taps during songs**, while working fine outside song mode.
+
+`inputFastPoll()` samples all ten keys, latches edges, and pushes side-column holds
+straight to the actuator link. It runs once per `loop()` **and** from inside
+`rhythmGameAudioPump()`, so actuator latency no longer depends on frame length.
+
+- Edges are sticky until `inputFastPollTake()` consumes them, so a press/release pair
+  inside one frame survives. Both `edgeDown` and `edgeUp` can therefore be true in the
+  same frame — consumers must treat them independently.
+- `[INPUT] worst poll gap NNms (song=1)` prints every 5 s. Single-digit ms in song mode
+  means it is working; 40 ms+ means the pump is not running often enough and sampling
+  should move to a timer ISR.
+- The 35 ms debounce lockout in `readLevelDebounced()` is wall-clock based, so polling
+  faster only detects transitions sooner — it cannot introduce bounce.
+
 ---
 
 ## Settings reference
@@ -92,14 +112,15 @@ Constants in `.cpp` files (e.g. `src/leds.cpp`, `src/rhythm_game.cpp`) require e
 
 Color mapping (side buttons → actuator):
 
-| Button column | `ActuatorColor` | Solenoid MCP ch | Motor |
-|---------------|-----------------|-----------------|-------|
-| Yellow (top) | `YELLOW` | 3 | — |
-| Blue | `BLUE` | 2 | — (**solenoid disabled in firmware**) |
-| Green | `GREEN` | 1 | green driver |
-| Red (bottom) | `RED` | 0 | red driver |
+| Button column | `ActuatorColor` | Solenoid MCP ch | Motor | Relay |
+|---------------|-----------------|-----------------|-------|-------|
+| Yellow (top) | `YELLOW` | 3 | — | yes |
+| Blue | `BLUE` | 2 | — (**solenoid disabled in firmware**) | yes |
+| Green | `GREEN` | 1 | green driver | yes |
+| Red (bottom) | `RED` | 0 | red driver | yes |
 
-Yellow also runs the yellow motor driver.
+Yellow also runs the yellow motor driver. The relay on GPIO 16 is closed while
+**any** of the four is held.
 
 ---
 
@@ -158,6 +179,63 @@ Boot: all solenoids driven **LOW**. Blue solenoid is **not fired** (hardcoded in
 
 ---
 
+### `src/solenoid_node/relay_config.h` — 5V relay (actuator)
+
+| Setting | Default | What it changes |
+|---------|---------|-----------------|
+| `RELAY_PIN` | `16` | Relay module IN (also in `platformio.ini`) |
+| `RELAY_ACTIVE_LOW` | `0` | Drive HIGH to close — **must match the module jumper** |
+| `RELAY_OPEN_DRAIN` | `0` | Always push-pull. See warning below. |
+| `RELAY_SELFTEST_CYCLES` | `3` | Boot self-test clicks. Set `0` for installation. |
+
+Hardware: SRD-05VDC-SL-C module ("1 Relay Module high/low level trigger"), jumper on **H**.
+Wiring: `IN` → GPIO 16, `DC+` → **5V** (own supply — the coil draws ~71 mA), `DC-` → **its own short wire
+to an ESP `GND` pin**.
+
+**Jumper must match `RELAY_ACTIVE_LOW`** (`H`→`0`, `L`→`1`) or the relay sits closed at idle and opens on
+press — inverted.
+
+### Ground bonding is not optional
+
+The module compares `IN` against **its own `DC-`**. Without a solid shared reference the GPIO level means
+nothing at the module. This was a real fault here: the relay ignored GPIO 16 entirely and instead fired
+whenever a *solenoid* switched, because solenoid current through the shared ground return shifted the
+module's reference. It fired for red/green/yellow and did nothing for blue (whose solenoid is disabled) —
+which looked exactly like a firmware bug. Probing `GND`↔`DC-` with a meter also fired it, because the
+meter was momentarily acting as the missing bond.
+
+Keep the module's ground return **off the solenoid return path** (star ground). Ground bounce from the
+solenoids can otherwise energize the relay uncommanded — the one failure direction that matters, since
+de-energized is the safe state.
+
+`H` is the preferred jumper position: it triggers ~1.5 V above ground so 3.3 V logic has margin, and a
+floating pin (boot, reset, ESP unpowered) reads LOW = de-energized.
+
+Earlier notes in git history claimed `H` could not source enough current at 3.3 V. Those measurements
+predate finding the ground fault and are not reliable — these modules are routinely driven from 3.3 V.
+
+### Verifying
+
+`relayOutputSelfTest()` runs in `setup()` before ESP-NOW, solenoids and DMX exist, and toggles the pin
+directly — so it isolates the GPIO→module path from the rest of the system. Three clean click-in /
+click-out cycles means the relay is genuinely driven by GPIO 16. Set `-DRELAY_SELFTEST_CYCLES=0` once
+commissioned.
+
+**Never set `RELAY_OPEN_DRAIN=1`.** The module's input side is `5V ──[R]──►|LED──── IN`, so releasing
+the pin lets IN rise to the module's 5 V rail. ESP32-S3 pads clamp at VDD+0.3 (~3.6 V) and are not 5 V
+tolerant. Push-pull holds the pin at 0 V / 3.3 V so it is never released and never sees 5 V.
+
+Fires on **any** color hold, blue included — closed while at least one button is
+down, open when the last one is released (held colors are tracked as a bitmask, so
+overlapping presses don't cut it short). Boot state is **open**, and the pin is
+parked before it becomes an output so the relay doesn't click on reset. The ESP-NOW
+failsafe opens it too.
+
+Free GPIO left on this node: 1, 2, 6, 8, 9, 12, 14, 39, 47 (15 is the `MOTOR_STBY_PIN`
+fallback). Never use 0/3/45/46 — strapping pins sit at the wrong level during boot.
+
+---
+
 ### `src/config.h` + `src/config.cpp` — controller hardware
 
 | Setting | Default | What it changes |
@@ -195,6 +273,18 @@ Boot: all solenoids driven **LOW**. Blue solenoid is **not fired** (hardcoded in
 | PYRRISMA welcome after idle | Idle ≥ **25 s** before exit |
 | Scale change (16+46 hold) | **1.5 s** |
 | Waveform preview (green hold) | **1.5 s** |
+| Pitch shift repeat (`PITCH_SHIFT_INTERVAL_MS`) | **122 ms** |
+| Pitch offset range (`leftDegOff` / `rightDegOff`) | **±24**, and stops early at the Hz ceiling |
+
+**Pitch ceiling.** `src/scales.cpp` clamps output to `kMaxSynthHz` (≈748 Hz — `220 × 2²
+× 0.85`) so pitch-up can't get shrill. That clamps the *frequency*; nothing used to clamp
+the *offset*, so past the ceiling `leftDegOff`/`rightDegOff` kept counting to +24 while the
+pitch stayed put — and shifting back down did nothing audible until you'd pressed down
+enough times to get back under the clamp. It read as "stuck on octave 24, can't tune out."
+
+`scaleIdxAtCeiling()` now stops the offset climbing once the note actually being played
+hits the ceiling, so the offset can never strand above the audible range and down-shift
+always responds on the first press. Down-shift logic is unchanged.
 
 ---
 
@@ -204,12 +294,24 @@ Override in `[env:esp32-s3-devkitc-1]` `build_flags` if using T-ETH-Lite pins.
 
 | Setting | Default (Elite) | What it changes |
 |---------|-----------------|-----------------|
-| `RHYTHM_SD_CS_PIN` | 12 | SD chip select |
+| `RHYTHM_SD_CS_PIN` | **21** (was 12) | SD chip select — **see rewire note** |
 | `RHYTHM_SD_SCK_PIN` | 10 | SPI clock |
 | `RHYTHM_SD_MISO_PIN` | 9 | SPI MISO |
 | `RHYTHM_SD_MOSI_PIN` | 11 | SPI MOSI |
 | `RHYTHM_ENABLE_SD` | `1` | `0` = no SD / rhythm from flash only |
 | `RHYTHM_SD_SPI_HZ` | 20 MHz | SD SPI speed |
+
+> **⚠ Rewire required: move the SD module's CS lead from GPIO 12 to GPIO 21.**
+> Until that wire moves, the SD card will not mount and song mode has no audio.
+
+**Why it moved.** GPIO 12 was both SD CS *and* `BTN_PINS[1]` = `IDX_LEFT[1]`, the
+left blue key. SPI drives CS push-pull, so with a song loaded a press could not pull
+the line down, and reads returned chip-select traffic — **phantom blue presses firing
+the relay and blue DMX at random during songs**. `pinOwnedBySd()` in `buttons.cpp`
+now masks any pin the SD peripheral owns (CS/SCK/MISO/MOSI, not just MISO as before),
+which stops the phantoms; moving CS to 21 is what gives the blue key back during song
+mode. GPIO 14 is *not* a valid alternative — it is the W5500 INT output. See
+`I2S_PIN_MAPPING.md` for the full map.
 
 ---
 
@@ -217,7 +319,7 @@ Override in `[env:esp32-s3-devkitc-1]` `build_flags` if using T-ETH-Lite pins.
 
 | Constant | Default | What it changes |
 |----------|---------|-----------------|
-| `RG_ENTER_HOLD_MS` | 10000 | Both yellow (GPIO 38+39) held → enter rhythm mode |
+| `RG_ENTER_HOLD_MS` | 10000 | Both yellow (GPIO 38 + 39) held together 10 s → enter rhythm mode. **Two keys only** — despite the `s_eightHoldStart` variable name, which is left over from an older eight-key gesture. See `rhythmEnterHold()`. |
 | `RG_EXIT_HOLD_MENU_MS` | 3000 | Bottom pair hold → song menu |
 | `RG_EXIT_HOLD_IDLE_MS` | 4000 | Bottom pair hold → exit to synth idle |
 | `RG_UI_IDLE_TO_SYNTH_MS` | 25000 | Menu/results AFK → synth idle |
@@ -236,6 +338,9 @@ Override in `[env:esp32-s3-devkitc-1]` `build_flags` if using T-ETH-Lite pins.
 | `upload_port` | per env | USB COM port |
 | `build_src_filter` | per env | Controller excludes `solenoid_node/`; actuator includes only actuator sources |
 | `-DMOTOR_STBY_PIN=13` | solenoid-node | Motor standby GPIO |
+| `-DRELAY_PIN=16` | solenoid-node | 5V relay GPIO (any color hold) |
+| `-DRELAY_ACTIVE_LOW=0` | solenoid-node | Drive HIGH to close — matches module jumper on `H` |
+| `-DRELAY_OPEN_DRAIN=0` | solenoid-node | Push-pull; keeps 5V off the GPIO |
 | `-DCORE_DEBUG_LEVEL=3` | both | ESP-IDF log verbosity |
 | `-DARDUINO_USB_CDC_ON_BOOT=1` | both | USB serial on boot |
 
@@ -245,7 +350,7 @@ Override in `[env:esp32-s3-devkitc-1]` `build_flags` if using T-ETH-Lite pins.
 
 ### Side color buttons (controller → actuator)
 
-- **Hold** → solenoid (except blue), motor (red/green/yellow), PAR live, bubble RGB live with pulse
+- **Hold** → solenoid (except blue), relay (all colors), motor (red/green/yellow), PAR live, bubble RGB live with pulse
 - **Release** → PAR off; bubble **latches** last color combo
 - **RGB sync** sends combined color levels so bubble mixes like PAR
 
@@ -258,8 +363,8 @@ Override in `[env:esp32-s3-devkitc-1]` `build_flags` if using T-ETH-Lite pins.
 
 ### Safety
 
-- Actuator boot: solenoids off, DMX safe, motors stopped
-- ESP-NOW failsafe: solenoid stuck ON + 3 s silence → all off
+- Actuator boot: solenoids off, relay open, DMX safe, motors stopped
+- ESP-NOW failsafe: solenoid or relay stuck ON + 3 s silence → all off
 - Idle enter: controller sends OFF for all colors + bubble kill
 
 ---

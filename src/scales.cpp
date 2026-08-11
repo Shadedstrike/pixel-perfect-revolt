@@ -89,6 +89,21 @@ float scaleHzAtIdx(int idx){
   return SCALE_HZ[idx];
 }
 
+// Raw (unclamped) Hz for a degree index — mirrors scaleHzAtIdx() without the
+// ceiling applied, so callers can tell "already at the top" from "still rising".
+static float rawHzAtIdx(int idx) {
+  ScaleDef &S = SCALES[scaleIndex];
+  if (S.count == 0)
+    return baseAHz;
+  if (idx < 0)
+    return baseAHz * powf(2.0f, (float)(S.steps[0] + idx) / 12.0f);
+  if (idx >= SCALE_LEN)
+    return baseAHz * powf(2.0f, (float)(S.steps[SCALE_LEN - 1] + (idx - (SCALE_LEN - 1))) / 12.0f);
+  return baseAHz * powf(2.0f, S.steps[idx] / 12.0f) * semiRatio((float)transpose);
+}
+
+bool scaleIdxAtCeiling(int idx) { return rawHzAtIdx(idx) >= kMaxSynthHz; }
+
 // quick note name (approx, A=baseAHz as tonic-ish)
 const char* noteNameFromHz(float hz){
   if (hz<=0) return "--";
