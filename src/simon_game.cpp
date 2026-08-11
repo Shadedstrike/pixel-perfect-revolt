@@ -19,6 +19,14 @@ static const uint32_t SIMON_FAIL_MS       = 3500;
 static const uint32_t SIMON_INPUT_TIMEOUT_MS = 6000;
 static const uint32_t SIMON_QUIT_HOLD_MS  = 2000;  // yellow pair to bail out
 static const int      SIMON_SEQ_MAX       = 32;
+// Clear this level and you win. 12 sits just past where a genuinely good player
+// peaks (human digit span is 7+-2, most people fail at 5-8), while keeping a full
+// run near two minutes -- playback replays the WHOLE sequence each round, so time
+// grows quadratically and an unbounded game would let one player hold the piece for
+// ten minutes with a queue behind them. Tune on-site once you have watched a few.
+static const int      SIMON_MAX_LEVEL     = 12;
+static const uint32_t SIMON_WIN_MS        = 7000;
+static const uint32_t SIMON_WIN_CHASE_MS  = 170;
 
 enum SimonPhase : uint8_t {
   SIMON_OFF = 0,
@@ -26,6 +34,7 @@ enum SimonPhase : uint8_t {
   SIMON_PLAYBACK,
   SIMON_INPUT,
   SIMON_GOOD,
+  SIMON_WIN,
   SIMON_FAIL,
 };
 
@@ -44,6 +53,7 @@ static uint32_t s_enterHeldMs = 0;
 static uint32_t s_quitHoldStart = 0;
 static int      s_litKey = -1;   // button index currently lit, -1 = none
 static int      s_wrongKey = -1;
+static int      s_winSlot = -1;   // colour slot lit by the win flourish
 
 // -------------------------------------------------------------- key pool ----
 // Index into the pool -> button index. 0-3 left, 4-7 right, 8-9 fronts.
@@ -55,12 +65,13 @@ static int simonPoolKey(int n) {
   return (n == 8) ? IDX_FRONT_L : IDX_FRONT_R;
 }
 
+// Fronts only appear once the normal game is already beaten.
 static int simonPoolSize(int round) {
   if (round <= 3)
-    return 4;
+    return 4;   // warm-up, left side only
   if (round <= 7)
-    return 8;
-  return 10;
+    return 8;   // both sides — the real game
+  return 10;    // + both fronts — levels 8..SIMON_MAX_LEVEL
 }
 
 // Is this button index part of the pool for the current round?
@@ -143,6 +154,7 @@ static void simonStart(uint32_t now) {
   s_seqLen = 0;
   s_round = 0;
   s_wrongKey = -1;
+  s_winSlot = -1;
   s_phase = SIMON_INTRO;
   s_phaseStartMs = now;
   s_enterHoldStart = 0;
@@ -156,6 +168,7 @@ static void simonStop(uint32_t now, const char *why) {
   simonAllActuatorsOff();
   s_phase = SIMON_OFF;
   s_litKey = -1;
+  s_winSlot = -1;
   s_enterHoldStart = 0;
   s_enterHeldMs = 0;
   s_quitHoldStart = 0;
@@ -264,9 +277,35 @@ void simonGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
     }
 
     case SIMON_GOOD:
-      if (now - s_phaseStartMs >= SIMON_GOOD_MS)
-        simonBeginRound(now);
+      if (now - s_phaseStartMs >= SIMON_GOOD_MS) {
+        if (s_round >= SIMON_MAX_LEVEL) {
+          s_phase = SIMON_WIN;
+          s_phaseStartMs = now;
+          s_litKey = -1;
+          Serial.printf("[SIMON] WIN — cleared level %d\n", s_round);
+        } else {
+          simonBeginRound(now);
+        }
+      }
       break;
+
+    case SIMON_WIN: {
+      // Actuator flourish: chase the four colours so the machine celebrates too.
+      const int step = (int)((now - s_phaseStartMs) / SIMON_WIN_CHASE_MS);
+      const int slot = step % 4;
+      if (slot != s_winSlot) {
+        if (s_winSlot >= 0) {
+          actuatorPublishForSideColumn(IDX_LEFT[s_winSlot], false);
+          actuatorPublishForSideColumn(IDX_RIGHT[s_winSlot], false);
+        }
+        s_winSlot = slot;
+        actuatorPublishForSideColumn(IDX_LEFT[slot], true);
+        actuatorPublishForSideColumn(IDX_RIGHT[slot], true);
+      }
+      if (now - s_phaseStartMs >= SIMON_WIN_MS)
+        simonStop(now, "win");
+      break;
+    }
 
     case SIMON_FAIL:
       if (now - s_phaseStartMs >= SIMON_FAIL_MS)
@@ -323,6 +362,18 @@ void simonGameRenderLeds(uint32_t now) {
     return;
   }
 
+  if (s_phase == SIMON_WIN) {
+    // Rainbow chase across all ten.
+    const uint32_t t = now - s_phaseStartMs;
+    for (int i = 0; i < 10; i++) {
+      const float hue = fmodf((float)t * 0.28f + (float)i * 36.f, 360.f);
+      uint8_t rr = 0, gg = 0, bb = 0;
+      hsv2rgb(hue, 1.0f, 1.0f, rr, gg, bb); // writes 0-255 directly
+      setLED_RGB(i, rr, gg, bb);
+    }
+    return;
+  }
+
   if (s_phase == SIMON_GOOD) {
     const bool on = ((now - s_phaseStartMs) / 110u) % 2u == 0u;
     for (int i = 0; i < 10; i++)
@@ -365,6 +416,9 @@ bool simonGameDrawLcd(uint32_t now) {
       return true;
     case SIMON_GOOD:
       lcdSimonBanner(now, "N I C E", "R O U N D  U P");
+      return true;
+    case SIMON_WIN:
+      lcdSimonWin(now, s_round);
       return true;
     case SIMON_FAIL:
       lcdSimonGameOver(now, s_round);

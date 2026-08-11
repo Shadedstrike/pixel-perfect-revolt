@@ -84,6 +84,7 @@ void lcdSimonStatus(uint32_t now, int round, int step, int total, bool playerTur
 // Forget Simon's CGRAM (slots 0-3) — call if another screen overwrites them.
 void lcdSimonInvalidate(void);
 void lcdSimonGameOver(uint32_t now, int round);
+void lcdSimonWin(uint32_t now, int round);
 // Forget the CGRAM slots this screen loaded (call if another screen overwrites 0-3).
 void lcdRetroEnterCountdownInvalidate(void);
 

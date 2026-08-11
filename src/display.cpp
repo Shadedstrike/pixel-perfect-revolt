@@ -2944,3 +2944,11 @@ void lcdSimonGameOver(uint32_t now, int round) {
   snprintf(buf, sizeof(buf), "REACHED ROUND %d", round);
   lcdSimonCentre(2, buf);
 }
+
+void lcdSimonWin(uint32_t now, int round) {
+  lcdSimonBorders(now, 150u); // hearts going wild
+  char buf[21];
+  lcdSimonCentre(1, ((now / 220u) & 1u) ? "* Y O U  W I N *" : "Y O U  W I N !");
+  snprintf(buf, sizeof(buf), "ALL %d LEVELS CLEAR", round);
+  lcdSimonCentre(2, buf);
+}
