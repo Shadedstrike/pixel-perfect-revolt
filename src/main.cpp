@@ -50,6 +50,15 @@
 // All audio functions are now in audio.cpp
 // All debug functions are now in debug.cpp
 
+// The Arduino loop task defaults to 8 KiB and this project was already close to it
+// (see the s_scanScratch note in rhythm_game.cpp — a 7.4 KiB local blew the canary).
+// The inter-row audio callback now runs MP3 decode from INSIDE the LCD renderer,
+// several frames deeper than decode used to sit, and the meltdown/visualiser paths
+// are deeper still. A stack overflow there would present as a random crash hours in,
+// which is exactly the failure mode this install cannot have. 16 KiB buys headroom;
+// RAM is at ~26% so there is plenty to spare.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+
 // ===================== Setup =====================
 void setup(){
   Serial.begin(115200);
