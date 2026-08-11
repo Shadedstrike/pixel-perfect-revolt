@@ -2775,7 +2775,9 @@ static uint8_t lcdEnterHash(uint32_t frame, uint8_t col) {
   return (uint8_t)(h & 0xFF);
 }
 
-void lcdRetroEnterCountdown(uint32_t now, uint32_t heldMs, uint32_t totalMs) {
+// Generic hold-countdown panel, shared by every "hold to do X" gesture.
+// title must be exactly 20 chars — it is written to row 2 verbatim and glitched.
+void lcdHoldCountdown(uint32_t now, uint32_t heldMs, uint32_t totalMs, const char *title) {
   lcdRetroDefineEnterGlyphs();
 
   const uint32_t remainMs = (heldMs >= totalMs) ? 0u : (totalMs - heldMs);
@@ -2805,7 +2807,15 @@ void lcdRetroEnterCountdown(uint32_t now, uint32_t heldMs, uint32_t totalMs) {
   lcd.print(row);
 
   // --- row 2: glitched title, exactly 20 cols ---
-  static const char kTitle[21] = "R Y T H E M  M 0 D E";
+  char kTitle[21];
+  memset(kTitle, ' ', 20);
+  kTitle[20] = ' ';
+  if (title) {
+    size_t tl = strlen(title);
+    if (tl > 20) tl = 20;
+    // Centre anything shorter than the panel.
+    memcpy(kTitle + (20 - tl) / 2, title, tl);
+  }
   memcpy(row, kTitle, 21);
   // Corrupt at most two columns per frame, and only ones carrying a letter, so the
   // phrase stays readable — "slightly glitched", not scrambled.
@@ -2821,4 +2831,116 @@ void lcdRetroEnterCountdown(uint32_t now, uint32_t heldMs, uint32_t totalMs) {
   row[20] = '\0';
   lcd.setCursor(0, 2);
   lcd.print(row);
+}
+
+// Rhythm mode keeps its own entry point so callers read clearly.
+void lcdRetroEnterCountdown(uint32_t now, uint32_t heldMs, uint32_t totalMs) {
+  lcdHoldCountdown(now, heldMs, totalMs, "R Y T H E M  M 0 D E");
+}
+
+// ===================== Simon ("Follow the Leader") panels =====================
+
+// Simon border glyphs — hearts. Slots 0-3, same window rhythm mode uses; the play
+// lane lives at 4-5 and redefines itself on entry, so nothing collides.
+static const uint8_t kSimonHeartBig[8] = {
+    0x00, 0x0A, 0x1F, 0x1F, 0x1F, 0x0E, 0x04, 0x00,
+};
+static const uint8_t kSimonHeartSmall[8] = {
+    0x00, 0x00, 0x0A, 0x1F, 0x0E, 0x04, 0x00, 0x00,
+};
+static const uint8_t kSimonSparkle[8] = {
+    0x00, 0x04, 0x00, 0x0A, 0x00, 0x04, 0x00, 0x00,
+};
+static const uint8_t kSimonDot[8] = {
+    0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+};
+
+static bool s_simonGlyphsLoaded = false;
+
+static void lcdSimonDefineGlyphs(void) {
+  if (s_simonGlyphsLoaded)
+    return;
+  lcdWriteCgramGlyph(0, kSimonHeartBig);
+  lcdWriteCgramGlyph(1, kSimonHeartSmall);
+  lcdWriteCgramGlyph(2, kSimonSparkle);
+  lcdWriteCgramGlyph(3, kSimonDot);
+  s_simonGlyphsLoaded = true;
+  // The hold-countdown screen shares slots 0-3, so make it reload its own next time.
+  lcdRetroEnterCountdownInvalidate();
+}
+
+void lcdSimonInvalidate(void) { s_simonGlyphsLoaded = false; }
+
+// beatMs: heartbeat period. Lower = more urgent. Hearts pulse big/small in place and
+// the whole pattern marches, so the border reads as alive rather than as a texture.
+static void lcdSimonBorders(uint32_t now, uint32_t beatMs) {
+  lcdSimonDefineGlyphs();
+  if (beatMs < 60u)
+    beatMs = 60u;
+  const uint32_t beat = now / beatMs;
+  const uint32_t march = now / 150u;
+  for (int r = 0; r < 2; r++) {
+    const int lcdRow = r ? 3 : 0;
+    lcd.setCursor(0, lcdRow);
+    for (uint8_t c = 0; c < 20; c++) {
+      // Counter-march so the two rows sweep against each other.
+      const uint32_t pos = r ? (march + (uint32_t)(19 - c)) : (march + (uint32_t)c);
+      uint8_t glyph;
+      if ((pos & 0x03u) == 0u)
+        glyph = 2;                       // sparkle every 4th cell
+      else if ((pos & 0x01u) == 0u)
+        glyph = 3;                       // spacer dot
+      else
+        glyph = (beat & 1u) ? 0 : 1;     // heart pulses big/small on the beat
+      lcd.write(glyph);
+    }
+  }
+}
+
+static void lcdSimonCentre(int row, const char *text) {
+  char buf[21];
+  memset(buf, ' ', 20);
+  buf[20] = ' ';
+  size_t l = text ? strlen(text) : 0;
+  if (l > 20)
+    l = 20;
+  if (text)
+    memcpy(buf + (20 - l) / 2, text, l);
+  lcd.setCursor(0, row);
+  lcd.print(buf);
+}
+
+void lcdSimonBanner(uint32_t now, const char *line1, const char *line2) {
+  lcdSimonBorders(now, 420u);
+  lcdSimonCentre(1, line1);
+  lcdSimonCentre(2, line2);
+}
+
+void lcdSimonStatus(uint32_t now, int round, int step, int total, bool playerTurn, int poolSize) {
+  // Player's turn beats faster — the border itself signals whose move it is, before
+  // you have read a single word.
+  lcdSimonBorders(now, playerTurn ? 200u : 460u);
+  char buf[21];
+  // Pool size doubles as the difficulty tell: 4 keys, 8, then 10 with the fronts.
+  snprintf(buf, sizeof(buf), "LEVEL %-2d  %d/%d  %2dK", round, step, total, poolSize);
+  lcdSimonCentre(1, buf);
+  if (playerTurn) {
+    // Blink GO so it is unmistakably your move — punchier and readable further away
+    // than "YOUR TURN".
+    lcdSimonCentre(2, ((now / 260u) & 1u) ? "* G O ! *" : "G O !");
+  } else {
+    // "WATCH", not "WAIT": wait reads as passive and players look away and miss the
+    // sequence. Watch tells them what to actually do. Trailing dots march so the
+    // screen never looks frozen mid-sequence.
+    static const char *kWatch[4] = {"W A T C H", "W A T C H .", "W A T C H . .", "W A T C H . . ."};
+    lcdSimonCentre(2, kWatch[(now / 300u) & 3u]);
+  }
+}
+
+void lcdSimonGameOver(uint32_t now, int round) {
+  lcdSimonBorders(now, 700u);
+  char buf[21];
+  lcdSimonCentre(1, "G A M E  O V E R");
+  snprintf(buf, sizeof(buf), "REACHED ROUND %d", round);
+  lcdSimonCentre(2, buf);
 }

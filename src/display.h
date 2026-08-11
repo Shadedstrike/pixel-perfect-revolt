@@ -73,6 +73,17 @@ void lcdRetroGetReady(uint32_t now, uint32_t getReadyStartMs, const char *songTi
 // Owns the full 20x4 panel: sprite borders on rows 0/3, "PRESS n MORE SEC" on
 // row 1, lightly glitched "R Y T H E M  M 0 D E" on row 2.
 void lcdRetroEnterCountdown(uint32_t now, uint32_t heldMs, uint32_t totalMs);
+// Generic "hold to do X" panel — sprite borders, "PRESS n MORE SEC", and `title`
+// centred and lightly glitched on row 2. Shared by rhythm entry, Simon entry, and
+// the wave / scale hold gestures.
+void lcdHoldCountdown(uint32_t now, uint32_t heldMs, uint32_t totalMs, const char *title);
+
+// Simon ("Follow the Leader") panels.
+void lcdSimonBanner(uint32_t now, const char *line1, const char *line2);
+void lcdSimonStatus(uint32_t now, int round, int step, int total, bool playerTurn, int poolSize);
+// Forget Simon's CGRAM (slots 0-3) — call if another screen overwrites them.
+void lcdSimonInvalidate(void);
+void lcdSimonGameOver(uint32_t now, int round);
 // Forget the CGRAM slots this screen loaded (call if another screen overwrites 0-3).
 void lcdRetroEnterCountdownInvalidate(void);
 

@@ -30,6 +30,7 @@
 #include "actuator_config.h"
 #include "serial_status.h"
 #include "rhythm_game.h"
+#include "simon_game.h"
 
 // All config definitions are now in config.cpp
 
@@ -52,6 +53,13 @@
 // ===================== Setup =====================
 void setup(){
   Serial.begin(115200);
+  // USB CDC writes block until the host drains the TX buffer. Unattended (cable in a
+  // laptop, no monitor open) the buffer fills and EVERY Serial.printf stalls for the
+  // timeout — this firmware logs on every button edge and on ESP-NOW rx at 20 Hz, so
+  // that compounds into visible input lag and eventually a wedged loop. 0 = drop
+  // instead of block. The actuator node already did this (serial_log.h); the
+  // controller did not, which is the asymmetry that makes long runs unstable.
+  Serial.setTxTimeoutMs(0);
   delay(3000); // Long delay
   
   serialStatusBanner("CONTROLLER (synth + rhythm game)");
@@ -272,11 +280,14 @@ void inputFastPoll(uint32_t now) {
 // task period (2 ms), not by frame length.
 static void inputSamplerTask(void *arg) {
   (void)arg;
-  TickType_t last = xTaskGetTickCount();
   const TickType_t period = pdMS_TO_TICKS(INPUT_TASK_PERIOD_MS);
   for (;;) {
     inputFastPoll(millis());
-    vTaskDelayUntil(&last, period);
+    // vTaskDelay, NOT vTaskDelayUntil. If one iteration overruns (a blocked Serial
+    // write, a slow esp_now_send), DelayUntil returns immediately over and over to
+    // "catch up" on missed deadlines, spinning at priority 5 and starving loop().
+    // Plain delay just resumes the cadence — jitter instead of a stall.
+    vTaskDelay(period);
   }
 }
 
@@ -285,7 +296,9 @@ void inputFastPollStartTask() {
     return;
   // Core 1 alongside loop(): core 0 runs the WiFi/ESP-NOW stack and we do not want
   // to contend with the radio we are trying to feed. Priority above loop() (1).
-  const BaseType_t ok = xTaskCreatePinnedToCore(inputSamplerTask, "input", 3072, nullptr, 5, nullptr, 1);
+  // 4096, not 3072: this task reaches Serial.printf via actuatorLinkSyncSideColumnHolds,
+  // and ESP32 vararg printf is stack-hungry. A blown stack here is a hard crash hours in.
+  const BaseType_t ok = xTaskCreatePinnedToCore(inputSamplerTask, "input", 4096, nullptr, 5, nullptr, 1);
   s_fpTaskRunning = (ok == pdPASS);
   Serial.printf("[INPUT] sampler task %s (%dms period, debounce %dms)\n",
                 s_fpTaskRunning ? "started" : "FAILED — falling back to loop() polling",
@@ -318,6 +331,12 @@ uint32_t inputFastPollWorstGapMs(bool reset) {
 }
 
 // ===================== Loop =====================
+// Voice-change hold gestures: both GREEN cycles wave shape, both RED cycles scale.
+// Countdown state is read by the LCD dispatch further down.
+static const uint32_t VOICE_HOLD_MS = 3500;
+static uint8_t  s_voiceCountdownKind = 0;   // 0 none, 1 wave, 2 scale
+static uint32_t s_voiceCountdownHeldMs = 0;
+
 int8_t leftDegOff=0, rightDegOff=0;
 uint32_t lastCenterScaleHold=0; bool centerHoldLatched=false;
 
@@ -385,6 +404,7 @@ void loop(){
   if (rhythmGameOwnsAudioOutput())
     rhythmGameAudioPump();
   rhythmGameLoop(now, down, edgeDownArr);
+  simonGameLoop(now, down, edgeDownArr);
   for (int i = 0; i < 10; i++) {
     if (edgeDownArr[i])
       rhythmGameOnButtonEdge(now);
@@ -400,7 +420,12 @@ void loop(){
   float wantL = 0, wantR = 0;
   bool fronts = down[IDX_FRONT_L] && down[IDX_FRONT_R];
 
-  if (!rhythmGameSuppressNormalUi()) {
+  // Cleared here, not inside the block below: if a mode takes over mid-hold the
+  // block stops running and a stale countdown would sit on the LCD after exit.
+  s_voiceCountdownKind = 0;
+  s_voiceCountdownHeldMs = 0;
+
+  if (!rhythmGameSuppressNormalUi() && !simonGameSuppressNormalUi()) {
   // ---- SCALES: hold both front (16+46) for 1.5 seconds to switch scale
   
   // Initialize bothHoldStart when both buttons are first pressed
@@ -417,34 +442,55 @@ void loop(){
     holdLatch=false;
   }
   
-  // Scale switching: happens at 1.5 seconds (1500ms)
-  if (fronts && !centerHoldLatched && !holdLatch){
-    uint32_t holdTime = now - lastCenterScaleHold;
-    if (holdTime >= 1500){ // 1.5 second hold
-      scaleIndex = (scaleIndex+1) % NUM_SCALES;
-      buildScaleHz();
-      centerHoldLatched=true;
-      Serial.printf("[SCALE] Changed to: %s\n", SCALES[scaleIndex].name);
+  // VOICE GESTURES — both GREEN (GPIO 5 + 15) cycles wave shape, both RED
+  // (GPIO 7 + 8) cycles scale. Both need VOICE_HOLD_MS and show a countdown panel
+  // while held. Scale used to sit on the front pair at 1.5 s; moving it to the reds
+  // leaves the fronts purely for pitch shift and gives it a visible countdown.
+  static uint32_t greenHoldStart = 0, redHoldStart = 0;
+  static bool greenLatched = false, redLatched = false;
+  const bool greens = down[IDX_LEFT[2]] && down[IDX_RIGHT[2]];
+  const bool reds   = down[IDX_LEFT[3]] && down[IDX_RIGHT[3]];
+
+  if (greens) {
+    if (greenHoldStart == 0)
+      greenHoldStart = now;
+    if (!greenLatched) {
+      s_voiceCountdownHeldMs = now - greenHoldStart;
+      s_voiceCountdownKind = 1;
     }
+    if (!greenLatched && (now - greenHoldStart) >= VOICE_HOLD_MS) {
+      audioCycleWaveShape();
+      greenLatched = true;
+      s_voiceCountdownKind = 0;
+      Serial.printf("[WAVE] %s\n", audioWaveShapeName(audioGetWaveShape()));
+      waveDisplayStart = now;
+      lcdPrintWaveShapePreview(audioGetWaveShape());
+      lastLCD = now;
+    }
+  } else {
+    greenHoldStart = 0;
+    greenLatched = false;
   }
 
-  // WAVEFORM: hold both GREEN side buttons (GPIO 5 + 9) ~1.5s to cycle SINE/TRI/SOFT/RICH
-  static uint32_t bothGreenHoldStart = 0;
-  static bool waveHoldLatched = false;
-  bool greens = down[IDX_LEFT[2]] && down[IDX_RIGHT[2]];
-  if (greens && bothGreenHoldStart == 0)
-    bothGreenHoldStart = now;
-  if (!greens) {
-    bothGreenHoldStart = 0;
-    waveHoldLatched = false;
-  }
-  if (greens && !waveHoldLatched && bothGreenHoldStart != 0 && (now - bothGreenHoldStart) >= 1500) {
-    audioCycleWaveShape();
-    waveHoldLatched = true;
-    Serial.printf("[WAVE] %s\n", audioWaveShapeName(audioGetWaveShape()));
-    waveDisplayStart = now;
-    lcdPrintWaveShapePreview(audioGetWaveShape());
-    lastLCD = now;
+  if (reds) {
+    if (redHoldStart == 0)
+      redHoldStart = now;
+    if (!redLatched) {
+      s_voiceCountdownHeldMs = now - redHoldStart;
+      s_voiceCountdownKind = 2;
+    }
+    if (!redLatched && (now - redHoldStart) >= VOICE_HOLD_MS) {
+      scaleIndex = (scaleIndex + 1) % NUM_SCALES;
+      buildScaleHz();
+      redLatched = true;
+      s_voiceCountdownKind = 0;
+      Serial.printf("[SCALE] Changed to: %s\n", SCALES[scaleIndex].name);
+      lcdPrintScaleSelection(scaleIndex, now);
+      lastLCD = now;
+    }
+  } else {
+    redHoldStart = 0;
+    redLatched = false;
   }
 
   // ---- Which side is active?
@@ -679,12 +725,23 @@ void loop(){
   if (rhythmGameIsActive())
     lcdPollMs = 50;
   // Countdown animates — 500ms would make the sprite border look broken.
-  if (rhythmGameEnterCountdownActive())
+  if (rhythmGameEnterCountdownActive() || simonGameEnterCountdownActive() || s_voiceCountdownKind != 0)
+    lcdPollMs = 60;
+  if (simonGameIsActive())
     lcdPollMs = 60;
   if (now - lastLCD > lcdPollMs) {
     if (rhythmGameEnterCountdownActive()) {
       // Takes the whole panel while the 4-key enter gesture is held.
       lcdRetroEnterCountdown(now, rhythmGameEnterHeldMs(), rhythmGameEnterTotalMs());
+      lastLCD = now;
+    } else if (simonGameEnterCountdownActive()) {
+      lcdHoldCountdown(now, simonGameEnterHeldMs(), simonGameEnterTotalMs(), "F O L L O W  L E A D");
+      lastLCD = now;
+    } else if (simonGameDrawLcd(now)) {
+      lastLCD = now;
+    } else if (s_voiceCountdownKind != 0) {
+      lcdHoldCountdown(now, s_voiceCountdownHeldMs, VOICE_HOLD_MS,
+                       s_voiceCountdownKind == 1 ? "N E W  W A V E" : "N E W  S C A L E");
       lastLCD = now;
     } else if (rhythmGameDrawLcd(now)) {
       lastLCD = now;
@@ -1366,7 +1423,16 @@ void loop(){
 
   actuatorLinkUpdateIdle(idle && !rhythmGameIsActive(), now, 0, 0, 0);
 
+  // Simon owns all ten LEDs. Rendered last so it overrides whatever the normal
+  // path just wrote — setLED_RGB pushes straight to the PCA9685, and pcaSet skips
+  // channels whose value is unchanged, so the extra pass costs almost no I2C.
+  if (simonGameIsActive())
+    simonGameRenderLeds(now);
+
   // ========= Audio render =========
+  // Simon supplies its own tones so the leader's sequence is audible.
+  if (simonGameIsActive())
+    simonGameAudioTargets(wantL, wantR);
   if (rhythmGameOwnsAudioOutput())
     rhythmGameAudioPump();
   else
