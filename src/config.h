@@ -30,6 +30,10 @@ extern const int IDX_RIGHT[4];
 #define IDX_FRONT_R 5            // 46
 // Multiply RGB for 16/46 only (all modes: idle, rhythm, pressed).
 static constexpr float FRONT_LED_BRIGHTNESS_SCALE = 0.40f;
+// Extra cut applied to the front keys (GPIO 16 / 46) *only in song mode*, where they
+// sit right under the player's eyes and read as blinding. Multiplies the above, so
+// song mode ends up at 0.40 x 0.80 = 0.32.
+static constexpr float FRONT_LED_SONG_MODE_SCALE = 0.80f;
 #define IDX_38 0
 #define IDX_11 6
 
@@ -46,7 +50,10 @@ static constexpr float FRONT_LED_BRIGHTNESS_SCALE = 0.40f;
 const int   SR            = 22050;
 const size_t BUF_SAMPLES  = 512;
 const int   DMA_COUNT     = 16;
-const float MASTER_VOL    = 0.85f;
+// Synth master only — audio.cpp applies it to the oscillators. The rhythm-game MP3
+// path does not go through it, so this does not change song-mode playback volume.
+// Cut 30% from the previous 0.85.
+const float MASTER_VOL    = 0.595f;
 const float GAIN_L        = 0.70f;
 const float GAIN_R        = 0.70f;
 const float AMP_ATTACK    = 0.010f;

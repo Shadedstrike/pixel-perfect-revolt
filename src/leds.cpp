@@ -1,4 +1,5 @@
 #include "leds.h"
+#include "rhythm_game.h" // rhythmGameIsActive() — front keys dim in song mode
 #include <Wire.h>
 #include <math.h>
 
@@ -63,9 +64,12 @@ void setLED_RGB(uint8_t i,uint8_t r,uint8_t g,uint8_t b){
   displayG[i] = g;
   displayB[i] = b;
   if (i == IDX_FRONT_L || i == IDX_FRONT_R) {
-    r = (uint8_t)lroundf((float)r * FRONT_LED_BRIGHTNESS_SCALE);
-    g = (uint8_t)lroundf((float)g * FRONT_LED_BRIGHTNESS_SCALE);
-    b = (uint8_t)lroundf((float)b * FRONT_LED_BRIGHTNESS_SCALE);
+    float scale = FRONT_LED_BRIGHTNESS_SCALE;
+    if (rhythmGameIsActive())
+      scale *= FRONT_LED_SONG_MODE_SCALE; // dimmer in song mode — they read as blinding
+    r = (uint8_t)lroundf((float)r * scale);
+    g = (uint8_t)lroundf((float)g * scale);
+    b = (uint8_t)lroundf((float)b * scale);
   }
   pcaSet(MAP[i].r.drv,MAP[i].r.ch,r);
   pcaSet(MAP[i].g.drv,MAP[i].g.ch,g);

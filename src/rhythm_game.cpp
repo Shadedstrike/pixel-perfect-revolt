@@ -1361,10 +1361,10 @@ uint32_t rhythmGameEnterTotalMs() { return RG_ENTER_HOLD_MS; }
 void rhythmGameAudioPump() {
   if (s_phase == RG_PLAYING)
     rhythmStreamLoop();
-  // Song mode stretches loop() well past a fast tap. The pump runs often during
-  // play, so sampling here keeps relay/solenoid response independent of frame
-  // length. Edges latch for loop() to consume, so nothing is double-counted.
-  inputFastPoll(millis());
+  // Sampling lives in the dedicated sampler task now (see inputFastPollStartTask).
+  // Polling here as well was still gated by the same stalls it was meant to dodge.
+  if (!inputFastPollTaskRunning())
+    inputFastPoll(millis());
 }
 
 void rhythmGameAudioPumpN(int n) {

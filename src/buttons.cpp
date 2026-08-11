@@ -131,19 +131,27 @@ bool readLevelDebounced(int pin, bool &edgeDown, bool &edgeUp) {
     return false;
   }
 #endif
-  uint8_t v = digitalRead(pin) ? 1u : 0u;
+  // LEADING-EDGE debounce: accept a change the instant it is seen, then ignore
+  // further changes on that pin for BTN_DEBOUNCE_MS.
+  //
+  // This used to also do `else g_tchg[idx] = millis();` on every stable sample,
+  // which turned it into "the level must hold steady for 35 ms" — adding a full
+  // 35 ms of latency to EVERY press and EVERY release (~70 ms per click, capping
+  // the rate near 14 Hz and making the relay feel late). Leading-edge costs zero
+  // latency and still rejects contact bounce, which only lasts a few ms.
+  const uint32_t nowMs = millis();
+  const uint8_t v = digitalRead(pin) ? 1u : 0u;
   edgeDown = edgeUp = false;
-  if (v != g_last[idx]) {
-    if (millis() - g_tchg[idx] > 35) {
-      g_tchg[idx] = millis();
-      uint8_t prev = g_last[idx];
-      g_last[idx] = v;
-      if (prev == 1 && v == 0)
-        edgeDown = true;
-      if (prev == 0 && v == 1)
-        edgeUp = true;
-    }
-  } else
-    g_tchg[idx] = millis();
-  return (v == 0);
+  if (v != g_last[idx] && (uint32_t)(nowMs - g_tchg[idx]) >= (uint32_t)BTN_DEBOUNCE_MS) {
+    g_tchg[idx] = nowMs;
+    const uint8_t prev = g_last[idx];
+    g_last[idx] = v;
+    if (prev == 1 && v == 0)
+      edgeDown = true;
+    if (prev == 0 && v == 1)
+      edgeUp = true;
+  }
+  // Return the DEBOUNCED level, not the raw pin. The relay follows this level, and
+  // a raw read at 500 Hz would let contact bounce chatter the relay on every press.
+  return (g_last[idx] == 0);
 }

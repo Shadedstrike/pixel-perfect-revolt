@@ -222,6 +222,10 @@ void setup(){
   lastFlameStepMs=millis();
 
   lcdPrintStatus(SCALES[scaleIndex].name, 0,0, 0,0);
+
+  // Last: input sampling moves to its own task so LCD/MP3 stalls in loop() cannot
+  // delay a button press reaching the relay.
+  inputFastPollStartTask();
 }
 
 // ===================== Fast input path =====================
@@ -230,10 +234,12 @@ void setup(){
 // those long frames was never observed at all — so no ESP-NOW ON/OFF was sent and
 // the relay/solenoids simply did not react. This polls independently of frame
 // length and latches edges so nothing is dropped.
-static bool s_fpLevel[10] = {};
-static bool s_fpPendDown[10] = {};
-static bool s_fpPendUp[10] = {};
-static uint32_t s_fpWorstGapMs = 0;
+static volatile bool s_fpLevel[10] = {};
+static volatile bool s_fpPendDown[10] = {};
+static volatile bool s_fpPendUp[10] = {};
+static volatile uint32_t s_fpWorstGapMs = 0;
+static portMUX_TYPE s_fpMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool s_fpTaskRunning = false;
 
 void inputFastPoll(uint32_t now) {
   static uint32_t lastPollMs = 0;
@@ -244,15 +250,46 @@ void inputFastPoll(uint32_t now) {
   }
   lastPollMs = now;
 
+  bool level[10];
   for (int i = 0; i < 10; i++) {
     bool ed = false, eu = false;
-    s_fpLevel[i] = readLevelDebounced(BTN_PINS[i], ed, eu);
+    level[i] = readLevelDebounced(BTN_PINS[i], ed, eu);
+    portENTER_CRITICAL(&s_fpMux);
+    s_fpLevel[i] = level[i];
     if (ed) s_fpPendDown[i] = true;
     if (eu) s_fpPendUp[i] = true;
+    portEXIT_CRITICAL(&s_fpMux);
   }
 
   // Straight to the radio — does not wait for the next loop() iteration.
-  actuatorLinkSyncSideColumnHolds(s_fpLevel);
+  actuatorLinkSyncSideColumnHolds(level);
+}
+
+// Dedicated sampler. loop() stalls for tens of ms on LCD I2C writes and MP3 decode,
+// and inputFastPoll() riding along in the audio pump was still gated by those stalls
+// — which is why the relay felt sluggish in song mode. This task runs at a higher
+// priority than loop() and preempts it, so button->relay latency is bounded by the
+// task period (2 ms), not by frame length.
+static void inputSamplerTask(void *arg) {
+  (void)arg;
+  TickType_t last = xTaskGetTickCount();
+  const TickType_t period = pdMS_TO_TICKS(INPUT_TASK_PERIOD_MS);
+  for (;;) {
+    inputFastPoll(millis());
+    vTaskDelayUntil(&last, period);
+  }
+}
+
+void inputFastPollStartTask() {
+  if (s_fpTaskRunning)
+    return;
+  // Core 1 alongside loop(): core 0 runs the WiFi/ESP-NOW stack and we do not want
+  // to contend with the radio we are trying to feed. Priority above loop() (1).
+  const BaseType_t ok = xTaskCreatePinnedToCore(inputSamplerTask, "input", 3072, nullptr, 5, nullptr, 1);
+  s_fpTaskRunning = (ok == pdPASS);
+  Serial.printf("[INPUT] sampler task %s (%dms period, debounce %dms)\n",
+                s_fpTaskRunning ? "started" : "FAILED — falling back to loop() polling",
+                (int)INPUT_TASK_PERIOD_MS, (int)BTN_DEBOUNCE_MS);
 }
 
 void inputFastPollTake(int i, bool &level, bool &edgeDown, bool &edgeUp) {
@@ -260,12 +297,18 @@ void inputFastPollTake(int i, bool &level, bool &edgeDown, bool &edgeUp) {
     level = edgeDown = edgeUp = false;
     return;
   }
+  // Critical section: the sampler task can set these mid-read, which would lose an
+  // edge between the read and the clear.
+  portENTER_CRITICAL(&s_fpMux);
   level = s_fpLevel[i];
   edgeDown = s_fpPendDown[i];
   edgeUp = s_fpPendUp[i];
   s_fpPendDown[i] = false;
   s_fpPendUp[i] = false;
+  portEXIT_CRITICAL(&s_fpMux);
 }
+
+bool inputFastPollTaskRunning() { return s_fpTaskRunning; }
 
 uint32_t inputFastPollWorstGapMs(bool reset) {
   const uint32_t v = s_fpWorstGapMs;
@@ -301,9 +344,10 @@ void loop(){
   if (!rhythmGameOwnsAudioOutput())
     buttonsRefreshSdSharedPins();
   
-  // Sample + push to the actuator link. Also runs inside the rhythm audio pump,
-  // so a tap that starts and ends between two main-loop iterations is still seen.
-  inputFastPoll(now);
+  // Sampling normally happens in the sampler task; this is only a fallback for the
+  // case where the task failed to start.
+  if (!inputFastPollTaskRunning())
+    inputFastPoll(now);
 
   // Consume what the fast poll latched. Edges are sticky until read here, so a
   // press/release pair that happened mid-frame is not lost.
