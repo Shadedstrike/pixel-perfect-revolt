@@ -1924,14 +1924,14 @@ static const char kExplodeChar  = '\x05'; // CGRAM slot 5 — hit burst
 // 5×8 CGRAM glyphs (bit4 = left pixel, bit0 = right). Shared by play lane + meltdown.
 // Heart: same ink density as burst — full block with one centre pixel cut on the top row (▼).
 static const uint8_t kLcdHeartGlyph[8] = {
-    0x1B, // ██░██  only row that differs from burst
-    0x1F, // █████
-    0x1F, // █████
-    0x1F, // █████
-    0x1F, // █████
-    0x1F, // █████
-    0x1F, // █████
-    0x1F, // █████  bottom row filled
+    0x00, // .....
+    0x0A, // .#.#.   two lobes
+    0x1F, // #####
+    0x1F, // #####
+    0x1F, // #####
+    0x0E, // .###.
+    0x04, // ..#..   point
+    0x00, // .....
 };
 // Hit burst: solid block — same density as heart but no top-centre cut.
 static const uint8_t kLcdBurstGlyph[8] = {
