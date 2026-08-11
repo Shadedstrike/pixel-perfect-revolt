@@ -3096,8 +3096,10 @@ void lcdIdleGesturePrompt(uint32_t now, uint8_t which) {
   switch (which & 0x03u) {
     case 0:  l1 = "HOLD BOTH BLUE 5s"; l2 = "F O L L O W  L E A D"; break;
     case 1:  l1 = "HOLD 4 TOP KEYS 5s"; l2 = "R Y T H E M  M 0 D E"; break;
+    // Wave stays letter-spaced — it lands at exactly 20 cols and fits. Scale does
+    // not: "C H A N G E  S C A L E" is 22 chars and was silently cut to "...S C A L".
     case 2:  l1 = "HOLD BOTH GREEN"; l2 = "C H A N G E  W A V E"; break;
-    default: l1 = "HOLD BOTH RED"; l2 = "C H A N G E  S C A L E"; break;
+    default: l1 = "HOLD BOTH RED"; l2 = "CHANGE SCALE"; break;
   }
   lcdSimonCentre(1, l1);
   lcdSimonCentre(2, l2);
