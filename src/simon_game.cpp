@@ -6,6 +6,7 @@
 #include "config.h"
 #include "display.h"
 #include "leds.h"
+#include "rhythm_game.h"
 #include "scales.h"
 
 #include <string.h>
@@ -226,6 +227,13 @@ void simonGameInit() {
 
 void simonGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
   if (s_phase == SIMON_OFF) {
+    // Never arm during the rhythm game. Both blues are playable keys there, so a
+    // held chord would drop a player straight out of a song into Simon.
+    if (rhythmGameIsActive()) {
+      s_enterHoldStart = 0;
+      s_enterHeldMs = 0;
+      return;
+    }
     if (simonEnterHold(down)) {
       if (s_enterHoldStart == 0)
         s_enterHoldStart = now;

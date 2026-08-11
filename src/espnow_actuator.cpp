@@ -21,15 +21,20 @@ static void formatMac(char *out, size_t outLen, const uint8_t mac[6]) {
 }
 
 static void onEspnowSend(const uint8_t *mac, esp_now_send_status_t status) {
-  char macStr[18];
-  formatMac(macStr, sizeof(macStr), mac);
+  // This fires for EVERY packet. With all keys held the controller sends RGB sync at
+  // 20Hz on top of colour packets, and formatting a MAC + printf per send -- in the
+  // WiFi task -- was enough to stutter MP3 playback. Failures still log every time;
+  // successes are counted and summarised occasionally.
   if (status == ESP_NOW_SEND_SUCCESS) {
     ++s_txOk;
-    Serial.printf("[ESPNOW] send_cb OK mac=%s  ok=%u fail=%u\n", macStr, (unsigned)s_txOk, (unsigned)s_txFail);
-  } else {
-    ++s_txFail;
-    Serial.printf("[ESPNOW] send_cb FAIL mac=%s  ok=%u fail=%u\n", macStr, (unsigned)s_txOk, (unsigned)s_txFail);
+    if ((s_txOk % 200u) == 0u)
+      Serial.printf("[ESPNOW] send_cb ok=%u fail=%u\n", (unsigned)s_txOk, (unsigned)s_txFail);
+    return;
   }
+  ++s_txFail;
+  char macStr[18];
+  formatMac(macStr, sizeof(macStr), mac);
+  Serial.printf("[ESPNOW] send_cb FAIL mac=%s  ok=%u fail=%u\n", macStr, (unsigned)s_txOk, (unsigned)s_txFail);
 }
 
 static void applyWifiChannel(uint8_t channel) {
