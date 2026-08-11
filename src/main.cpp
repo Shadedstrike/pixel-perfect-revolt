@@ -336,6 +336,13 @@ uint32_t inputFastPollWorstGapMs(bool reset) {
 static const uint32_t VOICE_HOLD_MS = 3500;
 static uint8_t  s_voiceCountdownKind = 0;   // 0 none, 1 wave, 2 scale
 static uint32_t s_voiceCountdownHeldMs = 0;
+// After the hold fires we stay in a selection mode so the choice can actually be
+// made: the panel keeps showing the current value and a fresh tap of the same pair
+// steps to the next. Without this the display flashed for one frame and reverted,
+// which reads as "entered the mode then immediately exited".
+static const uint32_t VOICE_SELECT_MS = 5000;
+static uint8_t  s_voiceSelectKind = 0;      // 0 none, 1 wave, 2 scale
+static uint32_t s_voiceSelectUntil = 0;
 
 int8_t leftDegOff=0, rightDegOff=0;
 uint32_t lastCenterScaleHold=0; bool centerHoldLatched=false;
@@ -451,21 +458,40 @@ void loop(){
   const bool greens = down[IDX_LEFT[2]] && down[IDX_RIGHT[2]];
   const bool reds   = down[IDX_LEFT[3]] && down[IDX_RIGHT[3]];
 
+  // Edge-detect the pairs so a tap steps the selection without a fresh 3.5s hold.
+  static bool prevGreens = false, prevReds = false;
+  const bool greensEdge = greens && !prevGreens;
+  const bool redsEdge   = reds && !prevReds;
+  prevGreens = greens;
+  prevReds = reds;
+
+  if (s_voiceSelectKind != 0 && (int32_t)(now - s_voiceSelectUntil) >= 0)
+    s_voiceSelectKind = 0; // idle timeout — leave selection
+
   if (greens) {
     if (greenHoldStart == 0)
       greenHoldStart = now;
-    if (!greenLatched) {
-      s_voiceCountdownHeldMs = now - greenHoldStart;
-      s_voiceCountdownKind = 1;
-    }
-    if (!greenLatched && (now - greenHoldStart) >= VOICE_HOLD_MS) {
+    if (s_voiceSelectKind == 1 && greensEdge) {
+      // Already selecting: tap steps to the next wave, no re-hold.
       audioCycleWaveShape();
       greenLatched = true;
-      s_voiceCountdownKind = 0;
-      Serial.printf("[WAVE] %s\n", audioWaveShapeName(audioGetWaveShape()));
+      s_voiceSelectUntil = now + VOICE_SELECT_MS;
       waveDisplayStart = now;
-      lcdPrintWaveShapePreview(audioGetWaveShape());
-      lastLCD = now;
+      Serial.printf("[WAVE] %s\n", audioWaveShapeName(audioGetWaveShape()));
+      lastLCD = 0;
+    } else if (!greenLatched && s_voiceSelectKind != 1) {
+      s_voiceCountdownHeldMs = now - greenHoldStart;
+      s_voiceCountdownKind = 1;
+      if ((now - greenHoldStart) >= VOICE_HOLD_MS) {
+        audioCycleWaveShape();
+        greenLatched = true;
+        s_voiceCountdownKind = 0;
+        s_voiceSelectKind = 1;
+        s_voiceSelectUntil = now + VOICE_SELECT_MS;
+        waveDisplayStart = now;
+        Serial.printf("[WAVE] %s\n", audioWaveShapeName(audioGetWaveShape()));
+        lastLCD = 0;
+      }
     }
   } else {
     greenHoldStart = 0;
@@ -475,18 +501,26 @@ void loop(){
   if (reds) {
     if (redHoldStart == 0)
       redHoldStart = now;
-    if (!redLatched) {
-      s_voiceCountdownHeldMs = now - redHoldStart;
-      s_voiceCountdownKind = 2;
-    }
-    if (!redLatched && (now - redHoldStart) >= VOICE_HOLD_MS) {
+    if (s_voiceSelectKind == 2 && redsEdge) {
       scaleIndex = (scaleIndex + 1) % NUM_SCALES;
       buildScaleHz();
       redLatched = true;
-      s_voiceCountdownKind = 0;
+      s_voiceSelectUntil = now + VOICE_SELECT_MS;
       Serial.printf("[SCALE] Changed to: %s\n", SCALES[scaleIndex].name);
-      lcdPrintScaleSelection(scaleIndex, now);
-      lastLCD = now;
+      lastLCD = 0;
+    } else if (!redLatched && s_voiceSelectKind != 2) {
+      s_voiceCountdownHeldMs = now - redHoldStart;
+      s_voiceCountdownKind = 2;
+      if ((now - redHoldStart) >= VOICE_HOLD_MS) {
+        scaleIndex = (scaleIndex + 1) % NUM_SCALES;
+        buildScaleHz();
+        redLatched = true;
+        s_voiceCountdownKind = 0;
+        s_voiceSelectKind = 2;
+        s_voiceSelectUntil = now + VOICE_SELECT_MS;
+        Serial.printf("[SCALE] Changed to: %s\n", SCALES[scaleIndex].name);
+        lastLCD = 0;
+      }
     }
   } else {
     redHoldStart = 0;
@@ -729,7 +763,8 @@ void loop(){
   if (rhythmGameIsActive())
     lcdPollMs = 25;
   // Countdown animates — 500ms would make the sprite border look broken.
-  if (rhythmGameEnterCountdownActive() || simonGameEnterCountdownActive() || s_voiceCountdownKind != 0)
+  if (rhythmGameEnterCountdownActive() || simonGameEnterCountdownActive() || s_voiceCountdownKind != 0 ||
+      s_voiceSelectKind != 0)
     lcdPollMs = 60;
   if (simonGameIsActive())
     lcdPollMs = 60;
@@ -742,6 +777,12 @@ void loop(){
       lcdHoldCountdown(now, simonGameEnterHeldMs(), simonGameEnterTotalMs(), "F O L L O W  L E A D");
       lastLCD = now;
     } else if (simonGameDrawLcd(now)) {
+      lastLCD = now;
+    } else if (s_voiceSelectKind == 2) {
+      lcdPrintScaleSelection(scaleIndex, now);
+      lastLCD = now;
+    } else if (s_voiceSelectKind == 1) {
+      lcdPrintWaveShapePreview(audioGetWaveShape());
       lastLCD = now;
     } else if (s_voiceCountdownKind != 0) {
       lcdHoldCountdown(now, s_voiceCountdownHeldMs, VOICE_HOLD_MS,

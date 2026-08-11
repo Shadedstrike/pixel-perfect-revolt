@@ -33,7 +33,9 @@ static constexpr float FRONT_LED_BRIGHTNESS_SCALE = 0.40f;
 // Extra cut applied to the front keys (GPIO 16 / 46) *only in song mode*, where they
 // sit right under the player's eyes and read as blinding. Multiplies the above, so
 // song mode ends up at 0.40 x 0.80 = 0.32.
-static constexpr float FRONT_LED_SONG_MODE_SCALE = 0.80f;
+// Was 0.80; a further 15% cut after seeing them on the piece. Multiplies the base
+// scale, so song mode is 0.40 x 0.68 = 0.272 vs 0.40 elsewhere.
+static constexpr float FRONT_LED_SONG_MODE_SCALE = 0.68f;
 #define IDX_38 0
 #define IDX_11 6
 

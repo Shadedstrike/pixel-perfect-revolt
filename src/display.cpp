@@ -2143,11 +2143,13 @@ static void lcdRetroFillNoteLane(char *row, uint32_t scrollPeriodMs, uint32_t so
     if (col < 0 || col >= W)
       continue;
 
-    // Far approach: dim dot; near reticle: full heart (reads as chronological stream).
-    if (col > kHitColR + 3)
-      row[col] = ':';
-    else
-      row[col] = kBeatChar;
+    // Hearts for the whole lane. This used to draw ':' for anything past
+    // kHitColR+3, which is most of a note's visible travel — so the lane read as a
+    // colon sliding across with the heart only appearing at the last moment.
+    // kLaneDotFromCol pushes the dim dot to the far edge only; set it >= W to
+    // disable dots entirely.
+    static const int kLaneDotFromCol = 18;
+    row[col] = (col >= kLaneDotFromCol) ? ':' : kBeatChar;
   }
 }
 
