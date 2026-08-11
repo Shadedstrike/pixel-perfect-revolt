@@ -910,20 +910,14 @@ void loop(){
       // Randomly select LCD animation (includes glitch text + new animations)
       static uint32_t lastAnimationSwitch = 0;
       static uint8_t currentLCDAnim = 0;
-      static uint8_t animCursor = 0;
-      // Was 4s + random pick. Both made it feel frantic: 4s is barely long enough to
-      // register an animation before it is replaced, and random selection can repeat
-      // or jump between wildly different looks back to back. 14s and a fixed order
-      // reads as a calm rotation instead of strobing.
-      const uint32_t ANIMATION_SWITCH_INTERVAL = 14000;
+      const uint32_t ANIMATION_SWITCH_INTERVAL = 4000; // Switch every 4 seconds
+      
+      // Switch animation randomly
       if(now - lastAnimationSwitch > ANIMATION_SWITCH_INTERVAL){
-        // Flowing ones first; the harsher glitch/matrix looks are dropped from the
-        // idle rotation entirely (0 = glitch text, 15 = matrix cyrillic).
-        // 5=wave, 6=kaleidoscope, 8=pulsing, 10=pyramid, 11=hieroglyphic,
-        // 12=cyrillic scroll, 13=factory, 14=soviet slogan
-        static const uint8_t anims[] = {5, 6, 8, 10, 11, 12, 13, 14};
-        animCursor = (uint8_t)((animCursor + 1) % (sizeof(anims) / sizeof(anims[0])));
-        currentLCDAnim = anims[animCursor];
+        // Randomly pick: 0=glitch text, 4=particle explosion, 5=wave, 6=kaleidoscope, 8=pulsing, 9=beat grid, 10=pyramid
+        // 11=hieroglyphic scroll, 12=cyrillic scroll, 13=factory industrial, 14=soviet slogan, 15=matrix cyrillic
+        uint8_t anims[] = {0, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15};
+        currentLCDAnim = anims[random(0, sizeof(anims)/sizeof(anims[0]))];
         lastAnimationSwitch = now;
       }
       
