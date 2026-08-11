@@ -111,7 +111,7 @@ void identifyBreakoutPins(){
     // Skip I2C and button pins
     if(pin == 17 || pin == 18 || // I2C
        pin == 38 || pin == 5 || pin == 7 || pin == 16 || pin == 46 ||
-       pin == 39 || pin == 2 || pin == 15 || pin == 8){ // Buttons (12 probed on purpose)
+       pin == 39 || pin == 2 || pin == 15 || pin == 8){ // Buttons (42 probed on purpose)
       Serial.printf("SKIP (I2C or button)\n");
       continue;
     }

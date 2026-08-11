@@ -95,10 +95,12 @@ void buttonsRefreshSdSharedPins() {
 
 #if RHYTHM_ENABLE_SD
 // A pin the SD/SPI peripheral is actively driving cannot be read as a button.
-// This covers every SD line, not just MISO: BTN_PINS[1] is GPIO 12, which is
-// also RHYTHM_SD_CS_PIN, and CS toggles LOW on every SD transaction. Sampling it
-// while SD is mounted reads chip-select traffic as phantom presses on the left
-// blue key — which would fire the relay and blue DMX at random during songs.
+// Covers every SD line, not just MISO. BTN_PINS[1] used to be GPIO 12, which is
+// also RHYTHM_SD_CS_PIN; CS toggles LOW on every SD transaction, so sampling it
+// while SD was mounted read chip-select traffic as phantom presses on the left
+// blue key and fired the relay and blue DMX at random during songs. That key now
+// lives on GPIO 42, so no key overlaps SD any more and this guard is defensive —
+// keep it, so the next pin reassignment cannot reintroduce the same fault.
 static inline bool pinOwnedBySd(int pin) {
   if (!rhythmMp3SdMounted())
     return false;

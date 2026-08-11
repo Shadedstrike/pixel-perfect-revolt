@@ -8,31 +8,40 @@
 //
 // T-ETH-Lite ESP32-S3 uses: CS=42, SCK=7, MISO=5, MOSI=6
 
-// CS moved 12 -> 42.  *** REQUIRES REWIRE: SD module CS lead 12 -> 42. ***
+// SD CS stays on GPIO 12. The LEFT BLUE KEY moved 12 -> 42 instead (BTN_PINS[1]).
+// Same conflict resolved from the other end, and it matches how the hardware was
+// actually rewired — no further wire changes needed.
 //
-// Why it had to move: GPIO 12 is BTN_PINS[1] = IDX_LEFT[1] = the left blue key.
+// Why something had to move: GPIO 12 was BTN_PINS[1] = IDX_LEFT[1] = the left blue key.
 // SPI drives CS push-pull, so while a song is loaded a button press cannot pull
 // the line down and reads return chip-select traffic instead — phantom blue
 // presses firing the relay at random. Masking it (pinOwnedBySd, buttons.cpp)
 // stopped the phantoms but killed the key during song mode.
 //
-// Why 42: on the actual breakout, the only terminals that can be grounded without
-// crashing the board are GPIO 9, 10, 40, 41, 42. 9 and 10 are already SD MISO/SCK,
-// so the usable set is 40/41/42. All three are full input+output GPIOs on ESP32-S3
-// (there are no input-only pins on the S3 — that is an ESP32-classic property).
-// They are the JTAG pins MTDO/MTDI/MTMS, but hardware JTAG is already unavailable
-// because MTCK (GPIO 39) is a button, and debugging happens over USB-CDC.
+// Why the KEY moved and not CS: GPIO 12 is hardwired to CS inside the SD module —
+// it cannot be reassigned. The button's switch lead is the only movable end.
 //
-// Rejected candidates, for the record:
-//   14 — W5500 INT, an output *from* the Ethernet chip; would fight our CS.
-//   21 — reachable in theory but NOT broken out usably on this breakout.
+// Why 42 for the key: on the actual breakout, the only terminals that can be
+// grounded without crashing the board are GPIO 9, 10, 40, 41, 42. 9/10/12 are
+// already SD MISO/SCK/CS, so the usable set is 40/41/42. All three are full
+// input+output GPIOs with internal pull-ups on ESP32-S3 (there are no input-only
+// pins on the S3 — that is an ESP32-classic property). They are JTAG
+// MTDO/MTDI/MTMS, but hardware JTAG is already unavailable because MTCK (GPIO 39)
+// is a key, and debugging happens over USB-CDC.
+//
+// Rejected, for the record:
+//   14 — W5500 INT, an output *from* the Ethernet chip.
+//   21 — not usably broken out on this breakout.
 //   45/47/48 — W5500 CS/MISO/SCK. See lilygo_eth_w5500.cpp. Ethernet is compiled
 //        out (LILYGO_ETH_BOARD 0) but the chip is still physically wired.
 //
+// pinOwnedBySd() still masks 9/10/11/12 while SD is mounted. None of those is a
+// key any more, so nothing gets masked — the guard is now purely defensive.
+//
 // Rest of the controller map: I2S 4/6/13, I2C 17/18, keys
-// 2/5/7/8/12/15/16/38/39/46, SD 9/10/11, USB 19/20, UART0 43/44, flash 26-32.
+// 2/5/7/8/15/16/38/39/42/46, SD 9/10/11/12, USB 19/20, UART0 43/44, flash 26-32.
 #ifndef RHYTHM_SD_CS_PIN
-#define RHYTHM_SD_CS_PIN 42
+#define RHYTHM_SD_CS_PIN 12
 #endif
 #ifndef RHYTHM_SD_SCK_PIN
 #define RHYTHM_SD_SCK_PIN 10

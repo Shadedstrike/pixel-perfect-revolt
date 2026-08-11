@@ -3,7 +3,7 @@
 // ======= HARD LED MAPPING (from probe) =======
 RGBMap MAP[10] = {
   /*0=GPIO38*/ {{1,13},{1,12},{1,14}},
-  /*1=GPIO12*/ {{1, 9},{1, 8},{1,10}},
+  /*1=GPIO42 (left blue, moved off SD CS / GPIO12) */ {{1, 9},{1, 8},{1,10}},
   /*2=GPIO5 */ {{1, 5},{1, 4},{1, 6}},
   /*3=GPIO7 */ {{1, 1},{1, 0},{1, 2}},
   /*4=GPIO16*/ {{1, 7},{1, 3},{1,11}},
@@ -15,7 +15,9 @@ RGBMap MAP[10] = {
 };
 
 // ===================== Buttons =======================
-const int BTN_PINS[10] = {38,12,5,7,16,46,39,2,15,8};
-const int IDX_LEFT[4] = {0,1,2,3};   // 38,12,5,7
+// Left blue moved GPIO 12 -> 42; SD CS keeps GPIO 12. They used to share pin 12,
+// so SPI chip-select traffic read back as phantom blue presses during songs.
+const int BTN_PINS[10] = {38,42,5,7,16,46,39,2,15,8};
+const int IDX_LEFT[4] = {0,1,2,3};   // 38,42,5,7
 const int IDX_RIGHT[4] = {6,7,8,9};   // 39,2,15,8
 

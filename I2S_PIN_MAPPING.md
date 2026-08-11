@@ -14,15 +14,15 @@ and `src/lilygo_eth_w5500.cpp` before changing anything.
 | 9 | SD MISO | `rhythm_sd_pins.h` |
 | 10 | SD SCK | `rhythm_sd_pins.h` |
 | 11 | SD MOSI | `rhythm_sd_pins.h` |
-| 12 | Key — left blue (`IDX_LEFT[1]`) | `config.cpp` `BTN_PINS[1]` |
+| 12 | SD CS | `rhythm_sd_pins.h` |
 | 13 | I2S BCLK | `config.h` `I2S_BCLK` |
 | 15, 16, 38, 39, 46 | Keys | `config.cpp` `BTN_PINS` |
 | 17 | I2C SDA — LCD + PCA9685 | `config.h` |
 | 18 | I2C SCL — LCD + PCA9685 | `config.h` |
-| 42 | **SD CS** | `rhythm_sd_pins.h` |
+| 42 | **Key — left blue** (`IDX_LEFT[1]`) | `config.cpp` `BTN_PINS[1]` |
 
-Full key list: `BTN_PINS = {38, 12, 5, 7, 16, 46, 39, 2, 15, 8}`
-`IDX_LEFT = {0,1,2,3}` → GPIO 38, 12, 5, 7 · `IDX_RIGHT = {6,7,8,9}` → GPIO 39, 2, 15, 8
+Full key list: `BTN_PINS = {38, 42, 5, 7, 16, 46, 39, 2, 15, 8}`
+`IDX_LEFT = {0,1,2,3}` → GPIO 38, 42, 5, 7 · `IDX_RIGHT = {6,7,8,9}` → GPIO 39, 2, 15, 8
 `IDX_FRONT_L = 4` → GPIO 16 · `IDX_FRONT_R = 5` → GPIO 46
 
 ## Reserved — do not reuse
@@ -51,16 +51,17 @@ push-pull, so while a song was loaded:
 
 `pinOwnedBySd()` in `buttons.cpp` now masks any pin the SD peripheral owns, which
 stops the phantoms. But masking alone left the blue key dead during song mode, so
-**CS moved to GPIO 42**.
+**the left blue KEY moved to GPIO 42** — GPIO 12 is hardwired to CS inside the SD
+module and cannot be reassigned, so the button lead was the only movable end.
 
-**Action required: move the SD module's CS lead from GPIO 12 to GPIO 42.** Until
-that wire moves, the SD card will not mount.
+**Done in hardware: the left blue button's switch lead moved from GPIO 12 to GPIO 42.**
+SD CS stays on GPIO 12.
 
-### Why 42 — measured, not assumed
+### Why 42 for the key — measured, not assumed
 
 On this breakout the only terminals that can be grounded **without crashing the
-board** are **GPIO 9, 10, 40, 41, 42**. 9 and 10 are already SD MISO/SCK, so the
-usable set is **40 / 41 / 42**.
+board** are **GPIO 9, 10, 40, 41, 42**. 9, 10 and 12 are already SD MISO/SCK/CS, so
+the usable set is **40 / 41 / 42**.
 
 All three are full input+output GPIOs on ESP32-S3 — the input-only 34–39 range is an
 **ESP32-classic** property and does not apply to the S3. They are JTAG MTDO/MTDI/MTMS,
@@ -109,9 +110,8 @@ and reports which one goes low:
 3. It prints `>>> GPIO N detected! (touched to GND) <<<`.
 4. Record terminal letter → GPIO N.
 
-That is how to locate **GPIO 12** (the left blue key, which currently also carries SD
-CS) and **GPIO 42** (the new SD CS). Do both before cutting anything, and write the
-result into the table above so the next person doesn't have to repeat it.
+The left blue key now sits on **GPIO 42**. Record which terminal that is in the table
+above so the next person does not have to measure it again.
 
 Only **GPIO 9, 10, 40, 41, 42** can be grounded here without crashing the board, so
 those are the only terminals worth probing.

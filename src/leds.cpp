@@ -38,7 +38,7 @@ uint16_t lastPWM_A[16], lastPWM_B[16];
 void getPressColorForGPIO(int gpio, uint8_t &r, uint8_t &g, uint8_t &b) {
   switch (gpio) {
     case 38: case 39: r=255; g=200; b=0;   return; // yellow (39 = right top; 11 is SD MOSI only)
-    case 12: case 2:  r=0;   g=64;  b=255; return; // blue
+    case 42: case 2:  r=0;   g=64;  b=255; return; // blue (42 = left key moved off SD CS / GPIO12)
     case 5:  case 15: r=0;   g=255; b=0;   return; // green (15 = right key moved off SD MISO)
     case 7:  case 8:  r=255; g=0;   b=0;   return; // red
     default: r=g=b=0; return;
