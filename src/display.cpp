@@ -1809,6 +1809,17 @@ uint32_t lcdRetroFlashDurationMs(void) {
 }
 
 void lcdRetroFlashScreen(uint32_t now, uint32_t flashStartMs) {
+  // Song discovery/remount can take several seconds. Keep this deliberately
+  // static so visitors receive an immediate, unambiguous wait indication.
+  (void)now;
+  (void)flashStartMs;
+  lcd.backlight();
+  lcd.setCursor(0, 0); lcd.print("                    ");
+  lcd.setCursor(0, 1); lcd.print("     LOADING...     ");
+  lcd.setCursor(0, 2); lcd.print("    RHYTHM MODE     ");
+  lcd.setCursor(0, 3); lcd.print("                    ");
+  return;
+#if 0
   uint32_t t = now - flashStartMs;
   const uint32_t tGlitchEnd = kRetroFlashFadeInMs + kRetroFlashGlitchHoldMs + kRetroFlashFadeGlitchMs;
 
@@ -1872,6 +1883,7 @@ void lcdRetroFlashScreen(uint32_t now, uint32_t flashStartMs) {
       }
     }
   }
+#endif
 }
 
 void lcdRetroMenu(int selectedIdx, const RhythmSongRow *rows, int numRows, uint32_t wallMs) {
@@ -3095,7 +3107,7 @@ void lcdIdleGesturePrompt(uint32_t now, uint8_t which) {
   const char *l2;
   switch (which & 0x03u) {
     case 0:  l1 = "HOLD BOTH BLUE 5s"; l2 = "F O L L O W  L E A D"; break;
-    case 1:  l1 = "HOLD BOTTOM 4 KEYS"; l2 = "R Y T H E M  M 0 D E"; break;
+    case 1:  l1 = "HOLD ALL KEYS 10s"; l2 = "R H Y T H M  M O D E"; break;
     // Wave stays letter-spaced — it lands at exactly 20 cols and fits. Scale does
     // not: "C H A N G E  S C A L E" is 22 chars and was silently cut to "...S C A L".
     case 2:  l1 = "HOLD BOTH GREEN"; l2 = "C H A N G E  W A V E"; break;
@@ -3111,4 +3123,16 @@ void lcdIdleGesturePrompt(uint32_t now, uint8_t which) {
 void lcdVoiceSelectHint(void) {
   lcd.setCursor(0, 3);
   lcd.print("16 DN  46 UP  ANY OK");
+}
+
+void lcdPatternModeScreen(const char *status, int level, int correctCount, int patternLen, int roundsCompleted) {
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print("Pattern mode");
+  lcd.setCursor(0, 1); lcd.printf("Level: %d", level);
+  lcd.setCursor(0, 2);
+  if (patternLen > 0) lcd.printf("Correct: %d/%d", correctCount, patternLen);
+  else lcd.printf("Correct: %d", correctCount);
+  lcd.setCursor(0, 3); lcd.print(status);
+  (void)roundsCompleted;
 }

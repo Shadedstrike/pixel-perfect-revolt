@@ -14,7 +14,7 @@
 #define MCP23017_ADDR 0x20
 #endif
 
-// Blue (MCP ch 2) is normally never fired — see main.cpp. Set to 1 to include it,
+// Blue (logical color 2, rewired MCP physical ch 1) is normally never fired. Set to 1 to include it,
 // e.g. -DSOLENOID_BLUE_ENABLED=1 in platformio.ini.
 #ifndef SOLENOID_BLUE_ENABLED
 #define SOLENOID_BLUE_ENABLED 0

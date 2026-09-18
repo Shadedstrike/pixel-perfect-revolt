@@ -4,6 +4,7 @@
 #include "display.h"
 #include "leds.h"
 #include "rhythm_mp3.h"
+#include "pattern_mode.h"
 #include <ctype.h>
 #if defined(ARDUINO_ARCH_ESP32)
 #include <esp_task_wdt.h>
@@ -237,7 +238,7 @@ static void rhythmReloadSongList() {
   Serial.printf("[RHYTHM] Loaded %d song(s) from /rhythm (by D then title)\n", s_numSongs);
 }
 
-static const uint32_t RG_ENTER_HOLD_MS = 5000;
+static const uint32_t RG_ENTER_HOLD_MS = 10000;
 // Yellow pair (GPIO 38 + 39, top of each column): 3s → song menu, 4s total → main idle (all rhythm phases).
 static const uint32_t RG_EXIT_HOLD_MENU_MS = 3000;
 static const uint32_t RG_EXIT_HOLD_IDLE_MS = 4000;
@@ -304,7 +305,11 @@ static bool rhythmYellowPairHold(const bool *down) { return down[IDX_38] && down
 // physical panel they sit at the BOTTOM. Index order and physical position are
 // reversed. User-facing text must say bottom; comments here say slot.
 static bool rhythmEnterHold(const bool *down) {
-  return down[IDX_LEFT[0]] && down[IDX_LEFT[1]] && down[IDX_RIGHT[0]] && down[IDX_RIGHT[1]];
+  for (int i = 0; i < 10; ++i) {
+    if (!down[i])
+      return false;
+  }
+  return true;
 }
 
 // Returns true when phase changed (caller should return from rhythmGameLoop).
@@ -1101,6 +1106,9 @@ static void rhythmUpdateHoldMeltdown(uint32_t now, const bool *down);
 
 void rhythmGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
 
+  if (patternModeIsActive())
+    return;
+
   if (s_phase == RG_NORMAL) {
     if (rhythmEnterHold(down)) {
       if (s_eightHoldStart == 0)
@@ -1113,7 +1121,7 @@ void rhythmGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
         s_enterHeldMs = 0;
         s_menuIdx = 0;
         s_rhythmUiLastMs = now;
-        Serial.println("[RHYTHM] Enter retro mode (4 bottom keys held >=5s)");
+        Serial.println("[RHYTHM] Enter retro mode (all 10 keys held >=10s)");
       }
     } else {
       s_eightHoldStart = 0;

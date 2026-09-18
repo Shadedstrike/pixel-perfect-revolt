@@ -201,9 +201,19 @@ Do **not** use GPIO 4 or 5 for motors — those are DMX UART.
 |---------|---------|-----------------|
 | `I2C_SDA` / `I2C_SCL` | 18 / 17 | MCP23017 I2C (do not conflict with DMX pins). |
 | `MCP23017_ADDR` | `0x20` | I2C address |
-| MCP ch 0–3 | — | red, green, blue, yellow solenoids |
+| MCP physical ch 0–3 | — | yellow, blue, green, red solenoids (rewired order) |
 
-Boot: all solenoids driven **LOW**. Blue solenoid is **not fired** (hardcoded in `main.cpp`).
+The firmware translates logical color to physical channel at this boundary, so all
+other code remains red/green/blue/yellow. Boot drives every solenoid **LOW**. Blue
+is not fired unless `SOLENOID_BLUE_ENABLED=1`.
+
+On a normal color press the solenoid opens immediately, its pump starts 50 ms
+later, and release stops the pump immediately while holding the air solenoid open
+for another 2 seconds. These timers are non-blocking.
+
+Holding both front buttons for 40 seconds enters latched **PURGE MODE**. All three
+pumps reverse and continue until the actuator node is rebooted. Purge intentionally
+ignores later normal actuator commands.
 
 ---
 
@@ -361,7 +371,7 @@ but its LED stays dark.
 
 | Constant | Default | What it changes |
 |----------|---------|-----------------|
-| `RG_ENTER_HOLD_MS` | 5000 | **All four bottom keys** (slots 0/1 — code calls them "top", panel puts them at the bottom) — both yellow (GPIO 38 + 39) *and* both blue (GPIO 42 + 2) — held together 5 s → enter rhythm mode. Four keys so ordinary two-handed play can't trigger it. The `s_eightHoldStart` variable name is historic. See `rhythmEnterHold()`. |
+| `RG_ENTER_HOLD_MS` | 10000 | All 10 buttons held together for 10 s → enter rhythm mode. The `s_eightHoldStart` variable name is historic. |
 | `RG_EXIT_HOLD_MENU_MS` | 3000 | Bottom pair hold → song menu |
 | `RG_EXIT_HOLD_IDLE_MS` | 4000 | Bottom pair hold → exit to synth idle |
 | `RG_UI_IDLE_TO_SYNTH_MS` | 25000 | Menu/results AFK → synth idle |
@@ -370,6 +380,14 @@ but its LED stays dark.
 | `RG_AFK_FADE_OUT_MS` | 3000 | Fade music before leaving play |
 | `RG_PAUSE_HOLD_MS` | 3000 | Pause/resume toggle hold |
 | `kLiveFeedbackWindowMs` | 4000 | Rolling score window for live % |
+
+---
+
+### Pattern mode (`src/pattern_mode.cpp`)
+
+Hold both yellow buttons for 5 seconds to enter the randomized side-button pattern
+game. Hold them again for 5 seconds to exit after releasing the entry gesture.
+Pattern, Simon, and rhythm modes are mutually exclusive.
 
 ---
 
@@ -424,7 +442,7 @@ but its LED stays dark.
 
 | Symptom | Check |
 |---------|-------|
-| Actuator dead | Same `ESPNOW_WIFI_CHANNEL`, both on protocol v3, serial `[ESPNOW] rx` on actuator |
+| Actuator dead | Same `ESPNOW_WIFI_CHANNEL`, both on protocol v5, serial `[ESPNOW] rx` on actuator |
 | Bubble spins on color press | Bubble menu address **007**, not 001/512 |
 | PAR dies while holding | Flash actuator (needs `DMX_REFRESH_HZ` continuous output) |
 | Fan hammers PSU | Lower `DMX_BUBBLE_FAN_MAX`, lengthen `BUBBLE_FAN_RAMP_UP_MS`, or factory **P000** pump speed |

@@ -109,6 +109,23 @@ void motorOutputSetColor(ActuatorColor color, bool on) {
   drivePair(m->in1, m->in2, on);
 }
 
+void motorOutputSetColorReverse(ActuatorColor color) {
+  const MotorPair *m = findMotor(color);
+  if (!m)
+    return;
+#if MOTOR_STBY_PIN >= 0
+  if (!s_stbyEnabled)
+    stbyDrive(true);
+#endif
+  digitalWrite(m->in1, LOW);
+  digitalWrite(m->in2, HIGH);
+}
+
+void motorOutputAllReverse() {
+  for (const MotorPair &m : kMotors)
+    motorOutputSetColorReverse(m.color);
+}
+
 void motorOutputAllOff() {
   for (const MotorPair &m : kMotors)
     drivePair(m.in1, m.in2, false);

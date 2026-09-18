@@ -122,6 +122,8 @@ static void onEspnowRecv(const uint8_t *mac, const uint8_t *data, int len) {
       Serial.printf("[ESPNOW] rx RGB_HOLD R=%u G=%u B=%u amber=%u seq=%u (1/20)\n", (unsigned)pkt.level_r,
                     (unsigned)pkt.level_g, (unsigned)pkt.level_b, (unsigned)pkt.color, (unsigned)pkt.seq);
     }
+  } else if (pkt.on == ACTUATOR_ON_PURGE) {
+    Serial.printf("[ESPNOW] rx PURGE seq=%u\n", (unsigned)pkt.seq);
   } else {
     Serial.printf("[ESPNOW] rx from %s color=%s on=%u seq=%u\n", macStr, serialStatusColorNameU8(pkt.color),
                   (unsigned)pkt.on, (unsigned)pkt.seq);
@@ -217,6 +219,15 @@ ActuatorCmdPacket espnowActuatorMakeDirectPacket(ActuatorColor color, uint8_t ta
   pkt.seq = ++s_txSeq;
   pkt.level_r = targetMask;
   pkt.level_g = on ? 1u : 0u;
+  return pkt;
+}
+
+ActuatorCmdPacket espnowActuatorMakePurgePacket() {
+  ActuatorCmdPacket pkt = {};
+  pkt.magic = ACTUATOR_PROTO_MAGIC;
+  pkt.version = ACTUATOR_PROTO_VERSION;
+  pkt.on = ACTUATOR_ON_PURGE;
+  pkt.seq = ++s_txSeq;
   return pkt;
 }
 

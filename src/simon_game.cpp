@@ -7,6 +7,7 @@
 #include "display.h"
 #include "leds.h"
 #include "rhythm_game.h"
+#include "pattern_mode.h"
 #include "scales.h"
 
 #include <string.h>
@@ -79,6 +80,9 @@ static int      s_wrongKey = -1;
 static int      s_winColourIdx = -1;  // index into kSimonWinOrder
 static int      s_winPumpPhase = -1;  // -1 = lead-in, else 0..PHASES-1
 static int      s_winChaseSlot = -1;  // colour slot lit during the flourish
+static int      s_inputToneKey = -1;
+static uint32_t s_inputToneUntil = 0;
+static int      s_previousFirstKey = -1;
 
 // -------------------------------------------------------------- key pool ----
 // Index into the pool -> button index. 0-3 left, 4-7 right, 8-9 fronts.
@@ -168,7 +172,19 @@ static void simonBeginRound(uint32_t now) {
   s_round++;
   if (s_seqLen < SIMON_SEQ_MAX) {
     const int pool = simonPoolSize(s_round);
-    s_seq[s_seqLen++] = (uint8_t)simonPoolKey((int)random(pool));
+    int pickSlot = (int)random(pool);
+    int pick = simonPoolKey(pickSlot);
+    // Never present the same opening cue in consecutive games and avoid adjacent
+    // repeats. This makes each run visibly different even if entropy is weak.
+    if (s_seqLen == 0 && pool > 1 && pick == s_previousFirstKey) {
+      do { pick = simonPoolKey((int)random(pool)); } while (pick == s_previousFirstKey);
+    }
+    if (s_seqLen > 0 && pool > 1 && pick == s_seq[s_seqLen - 1]) {
+      do { pick = simonPoolKey((int)random(pool)); } while (pick == s_seq[s_seqLen - 1]);
+    }
+    s_seq[s_seqLen++] = (uint8_t)pick;
+    if (s_seqLen == 1)
+      s_previousFirstKey = pick;
   }
   s_stepIdx = 0;
   s_stepLit = false;
@@ -189,6 +205,8 @@ static void simonStart(uint32_t now) {
   s_winColourIdx = -1;
   s_winPumpPhase = -1;
   s_winChaseSlot = -1;
+  s_inputToneKey = -1;
+  s_inputToneUntil = 0;
   s_phase = SIMON_INTRO;
   s_phaseStartMs = now;
   s_enterHoldStart = 0;
@@ -229,7 +247,7 @@ void simonGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
   if (s_phase == SIMON_OFF) {
     // Never arm during the rhythm game. Both blues are playable keys there, so a
     // held chord would drop a player straight out of a song into Simon.
-    if (rhythmGameIsActive()) {
+    if (rhythmGameIsActive() || patternModeIsActive()) {
       s_enterHoldStart = 0;
       s_enterHeldMs = 0;
       return;
@@ -302,6 +320,8 @@ void simonGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
           continue;
         if (!simonKeyInPool(i, s_round))
           continue; // keys outside this round's pool are ignored, not a loss
+        s_inputToneKey = i;
+        s_inputToneUntil = now + 220u;
         s_lastInputMs = now;
         if ((uint8_t)i == s_seq[s_inputIdx]) {
           if (++s_inputIdx >= s_seqLen) {
@@ -415,9 +435,14 @@ uint32_t simonGameEnterTotalMs() { return SIMON_ENTER_HOLD_MS; }
 void simonGameAudioTargets(float &wantL, float &wantR) {
   wantL = 0.f;
   wantR = 0.f;
-  if (s_phase == SIMON_PLAYBACK && s_litKey >= 0) {
-    const float hz = simonKeyHz(s_litKey);
-    if (simonKeyIsRight(s_litKey))
+  int toneKey = -1;
+  if (s_phase == SIMON_PLAYBACK && s_litKey >= 0)
+    toneKey = s_litKey;
+  else if (s_inputToneKey >= 0 && (int32_t)(millis() - s_inputToneUntil) < 0)
+    toneKey = s_inputToneKey;
+  if (toneKey >= 0) {
+    const float hz = simonKeyHz(toneKey);
+    if (simonKeyIsRight(toneKey))
       wantR = hz;
     else
       wantL = hz;

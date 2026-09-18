@@ -28,6 +28,9 @@ void playWakeupSequence(uint32_t animStartTime = 0); // Combined wakeup: power-u
 void playFallingShepardTone(uint32_t durationMs = 2000); // Falling shepard's tone illusion
 void audioDiagnosticTest(); // Continuous test pattern
 void audioRender(float wantL, float wantR);
+// Safety band-stop used by every PCM path. Removes the mechanically hazardous
+// 25-35 Hz band before samples reach I2S.
+void audioSafetyFilterStereo(int16_t &left, int16_t &right, uint32_t sampleRate);
 void audioPrintDiagnostics(); // Print I2S diagnostic information
 
 // Main synth waveform (both L/R voices). Cycle with hold: left+right GREEN ~1.5s.
@@ -48,4 +51,3 @@ const char *audioWaveShapeName(AudioWaveShape w);
 float audioWaveShapeSample(AudioWaveShape shape, float phaseRad);
 
 #endif // AUDIO_H
-

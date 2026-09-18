@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <cstring>
 
 #include "actuator_config.h"
 #include "actuator_protocol.h"
@@ -28,6 +29,16 @@ static bool s_dmxOk = false;
 static bool s_espOk = false;
 static bool s_usbMonitorLogged = false;
 static bool s_setupDone = false;
+static bool s_purgeActive = false;
+static const uint32_t MOTOR_START_DELAY_MS = 50;
+static const uint32_t SOLENOID_RELEASE_HOLD_MS = 2000;
+struct TimedColorOutput {
+  bool requested;
+  bool motorStarted;
+  uint32_t motorStartAt;
+  uint32_t solenoidOffAt;
+};
+static TimedColorOutput s_timed[ACTUATOR_COLOR_COUNT] = {};
 
 static void printBootConfig() {
   Serial.println("[BOOT] Subsystems:");
@@ -35,7 +46,7 @@ static void printBootConfig() {
   Serial.printf("  Motors: STBY=GPIO%d  red=%d/%d  green=%d/%d  yellow=%d/%d\n", (int)MOTOR_STBY_PIN,
                 (int)MOTOR_RED_IN1, (int)MOTOR_RED_IN2, (int)MOTOR_GREEN_IN1, (int)MOTOR_GREEN_IN2,
                 (int)MOTOR_YELLOW_IN1, (int)MOTOR_YELLOW_IN2);
-  Serial.printf("  Solenoids: MCP23017 SDA=%d SCL=%d  ch0=red ch1=green ch2=blue ch3=yellow\n", (int)I2C_SDA,
+  Serial.printf("  Solenoids: MCP23017 SDA=%d SCL=%d  ch0=yellow ch1=blue ch2=green ch3=red\n", (int)I2C_SDA,
                 (int)I2C_SCL);
   Serial.printf("  Relay: GPIO%d active-%s  closed while any color held\n", (int)RELAY_PIN,
                 RELAY_ACTIVE_LOW ? "LOW" : "HIGH");
@@ -60,17 +71,36 @@ static void onUsbMonitorConnected() {
 }
 
 static void applyActuatorColor(ActuatorColor color, bool on) {
+  if (color >= ACTUATOR_COLOR_COUNT || s_purgeActive)
+    return;
   Serial.printf("[ACT] %s %s", serialStatusColorName(color), on ? "ON" : "OFF");
 
+  TimedColorOutput &timed = s_timed[(uint8_t)color];
+  const uint32_t now = millis();
+  timed.requested = on;
+  if (on) {
+    timed.solenoidOffAt = 0;
+    timed.motorStartAt = now + MOTOR_START_DELAY_MS;
+    timed.motorStarted = false;
+  } else {
+    timed.motorStartAt = 0;
+    timed.motorStarted = false;
+    timed.solenoidOffAt = now + SOLENOID_RELEASE_HOLD_MS;
+  }
+
   if (motorOutputHasMotor(color)) {
-    motorOutputSetColor(color, on);
-    Serial.printf(" | mot=%s", on ? "RUN" : "STOP");
+    if (!on)
+      motorOutputSetColor(color, false);
+    Serial.printf(" | mot=%s", on ? "DELAY_50MS" : "STOP");
   } else {
     Serial.print(" | mot=—");
   }
 
-  if (color != ACTUATOR_COLOR_BLUE || SOLENOID_BLUE_ENABLED)
-    solenoidOutputSetChannel((uint8_t)color, on);
+  if (color != ACTUATOR_COLOR_BLUE || SOLENOID_BLUE_ENABLED) {
+    if (on)
+      solenoidOutputSetChannel((uint8_t)color, true);
+    Serial.printf(" | sol=%s", on ? "ON" : "HOLD_2S");
+  }
   else
     Serial.print(" | sol=—(blue disabled)");
 
@@ -95,6 +125,27 @@ static void applyActuatorColor(ActuatorColor color, bool on) {
   Serial.println();
 }
 
+static void serviceTimedColorOutputs(uint32_t now) {
+  if (s_purgeActive)
+    return;
+  for (uint8_t i = 0; i < ACTUATOR_COLOR_COUNT; ++i) {
+    TimedColorOutput &timed = s_timed[i];
+    const ActuatorColor c = (ActuatorColor)i;
+    if (timed.requested && !timed.motorStarted && timed.motorStartAt &&
+        (int32_t)(now - timed.motorStartAt) >= 0) {
+      timed.motorStartAt = 0;
+      timed.motorStarted = true;
+      if (motorOutputHasMotor(c))
+        motorOutputSetColor(c, true);
+    }
+    if (!timed.requested && timed.solenoidOffAt && (int32_t)(now - timed.solenoidOffAt) >= 0) {
+      timed.solenoidOffAt = 0;
+      if (c != ACTUATOR_COLOR_BLUE || SOLENOID_BLUE_ENABLED)
+        solenoidOutputSetChannel(i, false);
+    }
+  }
+}
+
 static void onBubblePartyCmd(const ActuatorCmdPacket *pkt) {
   const uint32_t now = millis();
   dmxOutputExtendBubbleParty(now, pkt->level_r, pkt->level_g, pkt->level_b, pkt->level_w, pkt->color);
@@ -107,6 +158,7 @@ static void actuatorForceAllOutputsOff(const char *reason) {
   solenoidOutputAllOff();
   relayOutputAllOff();
   motorOutputAllOff();
+  memset(s_timed, 0, sizeof(s_timed));
   if (dmxOutputReady())
     dmxOutputForceSafeOutputs();
 }
@@ -131,6 +183,19 @@ static void onEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
   ++s_rxCount;
   s_lastRxMs = millis();
   s_failsafeTripped = false;
+
+  if (pkt->on == ACTUATOR_ON_PURGE) {
+    if (!s_purgeActive) {
+      actuatorForceAllOutputsOff("enter purge");
+      s_purgeActive = true;
+      motorOutputAllReverse();
+      Serial.println("[PURGE] ACTIVE — all pumps reverse until actuator reboot");
+    }
+    return;
+  }
+
+  if (s_purgeActive)
+    return;
 
   if (pkt->on == ACTUATOR_ON_BUBBLE_PARTY) {
     onBubblePartyCmd(pkt);
@@ -159,6 +224,14 @@ static void onEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
     const ActuatorColor c = (ActuatorColor)pkt->color;
     const uint8_t mask = pkt->level_r;
     const bool on = pkt->level_g != 0;
+    if (c < ACTUATOR_COLOR_COUNT) {
+      if (mask & ACTUATOR_TARGET_SOLENOID)
+        s_timed[(uint8_t)c].solenoidOffAt = 0;
+      if (mask & ACTUATOR_TARGET_MOTOR) {
+        s_timed[(uint8_t)c].motorStartAt = 0;
+        s_timed[(uint8_t)c].motorStarted = on;
+      }
+    }
     // Independent targets — a plain colour ON cannot separate these.
     if ((mask & ACTUATOR_TARGET_SOLENOID) && c != ACTUATOR_COLOR_BLUE)
       solenoidOutputSetChannel((uint8_t)c, on);
@@ -272,6 +345,7 @@ void loop() {
     onUsbMonitorConnected();
 
   const uint32_t now = millis();
+  serviceTimedColorOutputs(now);
   debugAlive(now);
   debugHeartbeat(now);
   actuatorRxWatchdog(now);

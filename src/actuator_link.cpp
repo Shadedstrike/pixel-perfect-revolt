@@ -9,6 +9,10 @@
 #include <cstring>
 
 static uint32_t s_txCount = 0;
+static bool s_purgeActive = false;
+static uint32_t s_lastPurgeTxMs = 0;
+static bool actuatorPublishPacket(const ActuatorCmdPacket *pkt, const char *label);
+static void actuatorForceAllColorsOff();
 
 static const char *colorSlotName(int slot) {
   switch (slot) {
@@ -121,7 +125,39 @@ bool actuatorLinkSetup() {
   return ok;
 }
 
-void actuatorLinkLoop() { actuatorHeartbeat(); }
+void actuatorLinkLoop() {
+  actuatorHeartbeat();
+  // Purge is latched on both boards. Repeat the command so a single dropped
+  // broadcast cannot leave the controller displaying PURGE while pumps stay idle.
+  if (s_purgeActive && millis() - s_lastPurgeTxMs >= 500u) {
+    s_lastPurgeTxMs = millis();
+    const ActuatorCmdPacket pkt = espnowActuatorMakePurgePacket();
+    espnowActuatorSend(&pkt);
+  }
+}
+
+void actuatorLinkPurgeCheck(const bool down[10], uint32_t nowMs) {
+  static uint32_t frontHoldStart = 0;
+  if (s_purgeActive)
+    return;
+  if (!(down[4] && down[5])) {
+    frontHoldStart = 0;
+    return;
+  }
+  if (!frontHoldStart)
+    frontHoldStart = nowMs;
+  if (nowMs - frontHoldStart < 40000u)
+    return;
+  const ActuatorCmdPacket pkt = espnowActuatorMakePurgePacket();
+  if (actuatorPublishPacket(&pkt, "purge")) {
+    s_purgeActive = true;
+    s_lastPurgeTxMs = nowMs;
+    actuatorForceAllColorsOff();
+    Serial.println("[PURGE] ACTIVE — pumps reversing indefinitely");
+  }
+}
+
+bool actuatorLinkPurgeActive() { return s_purgeActive; }
 
 static uint8_t matchLevel(bool active) { return active ? (uint8_t)255 : 0; }
 

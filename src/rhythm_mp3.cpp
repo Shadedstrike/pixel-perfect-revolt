@@ -205,6 +205,7 @@ public:
     float g = s_streamFadeMul;
     int16_t adj[2] = {rhythmMp3ClampS16((int32_t)((float)sample[0] * g)),
                       rhythmMp3ClampS16((int32_t)((float)sample[1] * g))};
+    audioSafetyFilterStereo(adj[0], adj[1], s_streamSr);
     int32_t m = ((int32_t)adj[0] + (int32_t)adj[1]) >> 1;
     beatTrackerFeedFrame((int16_t)m);
     return AudioOutputI2S::ConsumeSample(adj);
@@ -334,6 +335,7 @@ static void rhythmSynthWriteBlock() {
     int16_t s = (int16_t)fmaxf(-30000.f, fminf(30000.f, v * 28000.f * s_streamFadeMul));
     buf[2 * i + 0] = s;
     buf[2 * i + 1] = s;
+    audioSafetyFilterStereo(buf[2 * i + 0], buf[2 * i + 1], SR);
     beatTrackerFeedFrame(s);
   }
   s_synSampleIdx += BUF_SAMPLES;

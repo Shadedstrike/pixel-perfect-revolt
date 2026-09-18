@@ -12,6 +12,12 @@ static Adafruit_MCP23X17 s_mcp;
 static bool s_ready = false;
 static bool s_channelOn[8] = {};
 
+// Logical ActuatorColor order is red, green, blue, yellow. The rewired MCP23017
+// outputs are the reverse physical order: ch0=yellow, ch1=blue, ch2=green,
+// ch3=red. Keep this translation at the hardware boundary so motors, DMX, relay,
+// protocol packets, and controller code continue to use logical colors.
+static const uint8_t kLogicalToPhysical[4] = {3, 2, 1, 0};
+
 static bool i2cProbe(uint8_t addr) {
   Wire.beginTransmission(addr);
   return Wire.endTransmission() == 0;
@@ -53,7 +59,7 @@ bool solenoidOutputBegin() {
     s_mcp.pinMode(i, OUTPUT);
     s_mcp.digitalWrite(i, LOW);
   }
-  Serial.printf("[SOL] MCP23017 OK addr=0x%02X  ch0=red ch1=green ch2=blue ch3=yellow\n", MCP23017_ADDR);
+  Serial.printf("[SOL] MCP23017 OK addr=0x%02X  physical ch0=yellow ch1=blue ch2=green ch3=red\n", MCP23017_ADDR);
   return true;
 }
 
@@ -64,11 +70,12 @@ void solenoidOutputSetChannel(uint8_t ch, bool on) {
     Serial.printf("[SOL] skip ch=%u (MCP not ready)\n", (unsigned)ch);
     return;
   }
-  if (ch >= 8)
+  if (ch >= 4)
     return;
   s_channelOn[ch] = on;
-  s_mcp.digitalWrite(ch, on ? HIGH : LOW);
-  Serial.printf("[SOL] ch=%u %s\n", (unsigned)ch, on ? "ON" : "OFF");
+  const uint8_t physical = kLogicalToPhysical[ch];
+  s_mcp.digitalWrite(physical, on ? HIGH : LOW);
+  Serial.printf("[SOL] logical=%u physical_ch=%u %s\n", (unsigned)ch, (unsigned)physical, on ? "ON" : "OFF");
 }
 
 void solenoidOutputAllOff() {

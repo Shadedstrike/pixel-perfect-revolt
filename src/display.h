@@ -103,5 +103,7 @@ void lcdRetroEnterCountdownInvalidate(void);
 void lcdRetroResultsScore(const char *title, char grade, int mainPct, int bonusPct, int totalPct, uint32_t now);
 void lcdRetroResultsPrompt(uint32_t wallMs, const char *nextSongTitle);
 
+void lcdPatternModeScreen(const char *status, int level, int correctCount, int patternLen, int roundsCompleted);
+
 #endif // DISPLAY_H
 

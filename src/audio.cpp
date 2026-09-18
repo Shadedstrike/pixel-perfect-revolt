@@ -5,6 +5,8 @@
 #include <math.h>
 #include <string.h>
 
+static esp_err_t audioWriteFiltered(int16_t *stereo, size_t bytes, size_t *written, TickType_t wait);
+
 // Synth state
 static AudioWaveShape s_waveShape = AUDIO_WAVE_SINE;
 
@@ -198,7 +200,7 @@ void playTestTone(float freqHz, uint32_t durationMs){
     }
     
     size_t written = 0;
-    esp_err_t err = i2s_write(I2S_NUM_0, buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
+    esp_err_t err = audioWriteFiltered(buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
     if(err == ESP_OK && written > 0){
       samplesPlayed += samplesThisBlock;
       if(samplesPlayed % (SR/10) == 0){ // Print progress every 100ms
@@ -307,7 +309,7 @@ void playGeigerCounter(){
     }
     
     size_t written = 0;
-    esp_err_t err = i2s_write(I2S_NUM_0, buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
+    esp_err_t err = audioWriteFiltered(buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
     if(err == ESP_OK && written > 0){
       samplesPlayed += samplesThisBlock;
     } else {
@@ -374,7 +376,7 @@ void playPowerUpSound(){
     }
     
     size_t written = 0;
-    esp_err_t err = i2s_write(I2S_NUM_0, buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
+    esp_err_t err = audioWriteFiltered(buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
     if(err == ESP_OK && written > 0){
       samplesPlayed += samplesThisBlock;
     } else {
@@ -540,7 +542,7 @@ void playWakeupSequence(uint32_t animStartTime){
     }
     
     size_t written = 0;
-    esp_err_t err = i2s_write(I2S_NUM_0, buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
+    esp_err_t err = audioWriteFiltered(buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
     if(err == ESP_OK && written > 0){
       samplesPlayed += samplesThisBlock;
     } else {
@@ -713,7 +715,7 @@ void playFallingShepardTone(uint32_t durationMs) {
     }
     
     size_t written = 0;
-    esp_err_t err = i2s_write(I2S_NUM_0, buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
+    esp_err_t err = audioWriteFiltered(buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
     if(err == ESP_OK && written > 0){
       samplesPlayed += samplesThisBlock;
     } else {
@@ -755,7 +757,7 @@ void audioDiagnosticTest(){
     }
     
     size_t written = 0;
-    esp_err_t err = i2s_write(I2S_NUM_0, buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
+    esp_err_t err = audioWriteFiltered(buf, sizeof(buf), &written, pdMS_TO_TICKS(100));
     if(err != ESP_OK || written != sizeof(buf)){
       Serial.printf("[I2S] ERROR: Write failed: err=%d, written=%d/%d\n", err, written, sizeof(buf));
     }
@@ -814,6 +816,7 @@ void audioRender(float wantL, float wantR){
   static float prevWantL = 0.0f, prevWantR = 0.0f;
   static float smoothedAmpL = 0.0f, smoothedAmpR = 0.0f;
   static float dcBlockL = 0.0f, dcBlockR = 0.0f; // DC blocking filter state
+  static float tactilePhaseL = 0.f, tactilePhaseR = 0.f;
 
   // New note: follow requested frequency, not gliding curFreq (curFreq can sit >0 for a long exponential tail).
   if (prevWantL <= 0.f && wantL > 0.f) {
@@ -874,6 +877,29 @@ void audioRender(float wantL, float wantR){
     
     float sL = (soundL && curFreqL > 0.f ? audioOscSample(phaseL) : 0.f) * (32767.f * MASTER_VOL * GAIN_L * smoothedAmpL * curFreqCompL);
     float sR = (soundR && curFreqR > 0.f ? audioOscSample(phaseR) : 0.f) * (32767.f * MASTER_VOL * GAIN_R * smoothedAmpR * curFreqCompR);
+
+    // Low-register harmonic layering: retain the audible note and add a sine
+    // fundamental that tactile transducers can reproduce. Octave folding preserves
+    // pitch class; 40 Hz is the hard floor so the protected 25-35 Hz band is never
+    // intentionally generated.
+    auto tactileHz = [](float hz) {
+      if (hz <= 0.f || hz > 200.f) return 0.f;
+      while (hz > 100.f) hz *= 0.5f;
+      while (hz < 40.f) hz *= 2.f;
+      return hz;
+    };
+    const float tactileL = tactileHz(curFreqL);
+    const float tactileR = tactileHz(curFreqR);
+    if (soundL && tactileL > 0.f) {
+      tactilePhaseL += TAU * tactileL / SR;
+      if (tactilePhaseL >= TAU) tactilePhaseL -= TAU;
+      sL += sinf(tactilePhaseL) * (32767.f * MASTER_VOL * GAIN_L * smoothedAmpL * 0.24f);
+    }
+    if (soundR && tactileR > 0.f) {
+      tactilePhaseR += TAU * tactileR / SR;
+      if (tactilePhaseR >= TAU) tactilePhaseR -= TAU;
+      sR += sinf(tactilePhaseR) * (32767.f * MASTER_VOL * GAIN_R * smoothedAmpR * 0.24f);
+    }
     
     // DC blocking filter to prevent clicks from DC offset
     // Simple high-pass filter: y[n] = x[n] - x[n-1] + 0.995*y[n-1]
@@ -904,7 +930,7 @@ void audioRender(float wantL, float wantR){
 
   if(i2s_initialized){
     size_t w=0; 
-    esp_err_t err=i2s_write(I2S_NUM_0, buf, sizeof(buf), &w, pdMS_TO_TICKS(100));
+    esp_err_t err=audioWriteFiltered(buf, sizeof(buf), &w, pdMS_TO_TICKS(100));
     if (err!=ESP_OK || w!=sizeof(buf)){
       if (++i2s_consec_errors>=3 || (millis()-lastGoodI2S>1000)){
         Serial.printf("[I2S ERROR] err=%d, written=%d/%d, consec_errors=%d\n", err, w, sizeof(buf), i2s_consec_errors);
@@ -971,4 +997,63 @@ void audioPrintDiagnostics(){
     Serial.println("=====================================\n");
   }
 }
+#include <math.h>
 
+struct SafetyNotchState {
+  float z1 = 0.f, z2 = 0.f;
+};
+
+struct SafetyNotchCoeffs {
+  float b0, b1, b2, a1, a2;
+};
+
+static SafetyNotchState s_safetyNotch[2][2];
+static SafetyNotchCoeffs s_safetyCoeffs[2];
+static uint32_t s_safetyRate = 0;
+
+static SafetyNotchCoeffs makeSafetyNotch(float hz, float q, uint32_t sr) {
+  const float w0 = 2.f * (float)M_PI * hz / (float)sr;
+  const float alpha = sinf(w0) / (2.f * q);
+  const float a0 = 1.f + alpha;
+  SafetyNotchCoeffs c;
+  c.b0 = 1.f / a0;
+  c.b1 = -2.f * cosf(w0) / a0;
+  c.b2 = c.b0;
+  c.a1 = c.b1;
+  c.a2 = (1.f - alpha) / a0;
+  return c;
+}
+
+static float runSafetyNotch(float x, SafetyNotchState &s, const SafetyNotchCoeffs &c) {
+  const float y = c.b0 * x + s.z1;
+  s.z1 = c.b1 * x - c.a1 * y + s.z2;
+  s.z2 = c.b2 * x - c.a2 * y;
+  return y;
+}
+
+void audioSafetyFilterStereo(int16_t &left, int16_t &right, uint32_t sampleRate) {
+  if (sampleRate < 8000u)
+    return;
+  if (sampleRate != s_safetyRate) {
+    memset(s_safetyNotch, 0, sizeof(s_safetyNotch));
+    s_safetyRate = sampleRate;
+    s_safetyCoeffs[0] = makeSafetyNotch(27.5f, 2.f, sampleRate);
+    s_safetyCoeffs[1] = makeSafetyNotch(32.5f, 2.f, sampleRate);
+  }
+  float l = (float)left, r = (float)right;
+  // Cascaded notches cover the full 25-35 Hz band while preserving the useful
+  // tactile range above it. Two bounded biquads are cheap and stable for hours.
+  l = runSafetyNotch(l, s_safetyNotch[0][0], s_safetyCoeffs[0]);
+  l = runSafetyNotch(l, s_safetyNotch[0][1], s_safetyCoeffs[1]);
+  r = runSafetyNotch(r, s_safetyNotch[1][0], s_safetyCoeffs[0]);
+  r = runSafetyNotch(r, s_safetyNotch[1][1], s_safetyCoeffs[1]);
+  left = (int16_t)fmaxf(-32768.f, fminf(32767.f, l));
+  right = (int16_t)fmaxf(-32768.f, fminf(32767.f, r));
+}
+
+static esp_err_t audioWriteFiltered(int16_t *stereo, size_t bytes, size_t *written, TickType_t wait) {
+  const size_t frames = bytes / (sizeof(int16_t) * 2u);
+  for (size_t i = 0; i < frames; ++i)
+    audioSafetyFilterStereo(stereo[2 * i], stereo[2 * i + 1], SR);
+  return i2s_write(I2S_NUM_0, stereo, bytes, written, wait);
+}
