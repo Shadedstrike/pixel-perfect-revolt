@@ -12,6 +12,7 @@
 #endif
 #include <math.h>
 #include <stdint.h>
+#include <new>
 #include <stdlib.h>
 #include <string.h>
 
@@ -181,6 +182,12 @@ static AudioGeneratorMP3 *s_mp3 = nullptr;
 // RAM read-ahead hides SD latency spikes / main-loop jitter from the MP3 bitstream reader.
 // 64 KiB stressed heap on some tracks; 32 KiB is usually enough and reduces malloc stalls.
 static constexpr uint32_t kMp3SdReadAheadBytes = 32 * 1024;
+// Reserve the two large MP3 work areas once. Repeatedly allocating/freeing these
+// blocks fragmented the ESP32 heap during long installations with many song
+// changes. Small wrapper objects are still recreated, but all allocations are
+// checked and the large storage never moves.
+alignas(8) static uint8_t s_mp3ReadAhead[kMp3SdReadAheadBytes];
+alignas(8) static uint8_t s_mp3DecoderWork[AudioGeneratorMP3::preAllocSize()];
 
 static int16_t rhythmMp3ClampS16(int32_t v) {
   if (v > 32767)
@@ -492,7 +499,7 @@ bool rhythmMp3TryPlay(const char *path) {
   AudioFileSourceSD *sdSrc = nullptr;
 #if RHYTHM_ENABLE_SD && (RHYTHM_SD_CS_PIN >= 0)
   if (s_sd_mounted && SD.exists(path)) {
-    sdSrc = new AudioFileSourceSD(path);
+    sdSrc = new (std::nothrow) AudioFileSourceSD(path);
     if (sdSrc && !sdSrc->isOpen()) {
       delete sdSrc;
       sdSrc = nullptr;
@@ -509,7 +516,7 @@ bool rhythmMp3TryPlay(const char *path) {
 #endif
   yield();
 
-  AudioFileSource *src = new AudioFileSourceBuffer(sdSrc, kMp3SdReadAheadBytes);
+  AudioFileSource *src = new (std::nothrow) AudioFileSourceBuffer(sdSrc, s_mp3ReadAhead, sizeof(s_mp3ReadAhead));
   if (!src) {
     delete sdSrc;
     Serial.println("[RHYTHM] MP3 read-ahead buffer alloc failed");
@@ -525,7 +532,17 @@ bool rhythmMp3TryPlay(const char *path) {
   yield();
 
   s_file = src;
-  s_out = new TappedAudioOutput();
+  s_out = new (std::nothrow) TappedAudioOutput();
+  if (!s_out) {
+    Serial.println("[RHYTHM] MP3 output allocation failed");
+    delete s_file;
+    s_file = nullptr;
+    delete s_fileSd;
+    s_fileSd = nullptr;
+    audioInit();
+    buttonsRestoreInputPullups();
+    return false;
+  }
   s_out->SetPinout(I2S_BCLK, I2S_LRCK, I2S_DATA);
   s_out->SetRate(44100);
   s_streamSr = 44100;
@@ -547,7 +564,12 @@ bool rhythmMp3TryPlay(const char *path) {
 #endif
   yield();
   Serial.printf("[RHYTHM] MP3 decoder starting: %s\n", path);
-  s_mp3 = new AudioGeneratorMP3();
+  s_mp3 = new (std::nothrow) AudioGeneratorMP3(s_mp3DecoderWork, sizeof(s_mp3DecoderWork));
+  if (!s_mp3) {
+    Serial.println("[RHYTHM] MP3 decoder allocation failed");
+    rhythmMp3Stop();
+    return false;
+  }
   if (!s_mp3->begin(s_file, s_out)) {
     Serial.printf("[RHYTHM] MP3 decoder begin() failed: %s (re-encode as 44.1kHz stereo CBR/VBR mp3)\n", path);
     rhythmMp3Stop();

@@ -168,8 +168,9 @@ static void actuatorRxWatchdog(uint32_t now) {
     return;
   if (now - s_lastRxMs < (uint32_t)ACTUATOR_RX_FAILSAFE_MS)
     return;
-  // Relay too: a blue-only hold leaves every solenoid off but the relay closed.
-  if (!solenoidOutputAnyOn() && !relayOutputActive())
+  // Include motors: an MCP/I2C failure can leave the solenoid state dark while a
+  // pump is still running. Every energized output participates in the failsafe.
+  if (!solenoidOutputAnyOn() && !relayOutputActive() && !motorOutputAnyOn())
     return;
   if (s_failsafeTripped)
     return;

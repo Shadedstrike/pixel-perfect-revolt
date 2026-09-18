@@ -11,6 +11,7 @@ void motorOutputSetColorReverse(ActuatorColor color);
 void motorOutputAllReverse();
 void motorOutputAllOff();
 bool motorOutputHasMotor(ActuatorColor color);
+bool motorOutputAnyOn();
 bool motorOutputStbyEnabled();
 int motorOutputStbyLevel();
 

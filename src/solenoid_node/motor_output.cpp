@@ -22,6 +22,7 @@ static const uint8_t kAllDirectionPins[] = {
 };
 
 static bool s_stbyEnabled = false;
+static bool s_motorOn[ACTUATOR_COLOR_COUNT] = {};
 
 static void forcePinOutput(uint8_t pin, int level) {
   gpio_reset_pin((gpio_num_t)pin);
@@ -107,6 +108,7 @@ void motorOutputSetColor(ActuatorColor color, bool on) {
     stbyDrive(true);
 #endif
   drivePair(m->in1, m->in2, on);
+  s_motorOn[(uint8_t)color] = on;
 }
 
 void motorOutputSetColorReverse(ActuatorColor color) {
@@ -119,6 +121,7 @@ void motorOutputSetColorReverse(ActuatorColor color) {
 #endif
   digitalWrite(m->in1, LOW);
   digitalWrite(m->in2, HIGH);
+  s_motorOn[(uint8_t)color] = true;
 }
 
 void motorOutputAllReverse() {
@@ -127,8 +130,18 @@ void motorOutputAllReverse() {
 }
 
 void motorOutputAllOff() {
-  for (const MotorPair &m : kMotors)
+  for (const MotorPair &m : kMotors) {
     drivePair(m.in1, m.in2, false);
+    s_motorOn[(uint8_t)m.color] = false;
+  }
+}
+
+bool motorOutputAnyOn() {
+  for (uint8_t i = 0; i < ACTUATOR_COLOR_COUNT; ++i) {
+    if (s_motorOn[i])
+      return true;
+  }
+  return false;
 }
 
 bool motorOutputStbyEnabled() { return s_stbyEnabled; }

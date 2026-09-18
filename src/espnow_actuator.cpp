@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <freertos/semphr.h>
 
 static bool s_ready = false;
 static bool s_isTx = false;
@@ -13,6 +14,15 @@ static uint32_t s_txSeq = 0;
 static uint32_t s_txOk = 0;
 static uint32_t s_txFail = 0;
 static uint32_t s_rxBad = 0;
+static SemaphoreHandle_t s_sendMutex = nullptr;
+static portMUX_TYPE s_seqMux = portMUX_INITIALIZER_UNLOCKED;
+
+static uint32_t nextTxSeq() {
+  portENTER_CRITICAL(&s_seqMux);
+  const uint32_t seq = ++s_txSeq;
+  portEXIT_CRITICAL(&s_seqMux);
+  return seq;
+}
 
 static const uint8_t kBroadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -75,6 +85,15 @@ static bool espnowCoreInit(bool tx) {
   }
 
   s_isTx = tx;
+  if (tx && !s_sendMutex) {
+    s_sendMutex = xSemaphoreCreateMutex();
+    if (!s_sendMutex) {
+      Serial.println("[ESPNOW] send mutex allocation failed");
+      esp_now_deinit();
+      s_ready = false;
+      return false;
+    }
+  }
   s_ready = true;
   Serial.printf("[ESPNOW] %s ready ch=%u mac=%s\n", tx ? "TX" : "RX", (unsigned)ESPNOW_WIFI_CHANNEL,
                 WiFi.macAddress().c_str());
@@ -151,7 +170,14 @@ bool espnowActuatorReady() { return s_ready; }
 bool espnowActuatorSend(const ActuatorCmdPacket *pkt) {
   if (!s_ready || !s_isTx || !pkt)
     return false;
-  return esp_now_send(kBroadcastMac, reinterpret_cast<const uint8_t *>(pkt), sizeof(ActuatorCmdPacket)) == ESP_OK;
+  // Input sampling and the main/UI loop both transmit. Serialize the ESP-IDF call
+  // so their sends cannot overlap; the mutex provides priority inheritance for
+  // the high-priority input task.
+  if (!s_sendMutex || xSemaphoreTake(s_sendMutex, pdMS_TO_TICKS(25)) != pdTRUE)
+    return false;
+  const bool ok = esp_now_send(kBroadcastMac, reinterpret_cast<const uint8_t *>(pkt), sizeof(ActuatorCmdPacket)) == ESP_OK;
+  xSemaphoreGive(s_sendMutex);
+  return ok;
 }
 
 ActuatorCmdPacket espnowActuatorMakePacket(ActuatorColor color, bool on) {
@@ -160,7 +186,7 @@ ActuatorCmdPacket espnowActuatorMakePacket(ActuatorColor color, bool on) {
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.color = (uint8_t)color;
   pkt.on = on ? ACTUATOR_ON_ON : ACTUATOR_ON_OFF;
-  pkt.seq = ++s_txSeq;
+  pkt.seq = nextTxSeq();
   return pkt;
 }
 
@@ -170,7 +196,7 @@ ActuatorCmdPacket espnowActuatorMakeBubblePartyPacket(uint8_t r, uint8_t g, uint
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.color = amber;
   pkt.on = ACTUATOR_ON_BUBBLE_PARTY;
-  pkt.seq = ++s_txSeq;
+  pkt.seq = nextTxSeq();
   pkt.level_r = r;
   pkt.level_g = g;
   pkt.level_b = b;
@@ -183,7 +209,7 @@ ActuatorCmdPacket espnowActuatorMakeBubbleKillPacket() {
   pkt.magic = ACTUATOR_PROTO_MAGIC;
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.on = ACTUATOR_ON_BUBBLE_KILL;
-  pkt.seq = ++s_txSeq;
+  pkt.seq = nextTxSeq();
   return pkt;
 }
 
@@ -193,7 +219,7 @@ ActuatorCmdPacket espnowActuatorMakeIdleDmxPacket(uint8_t r, uint8_t g, uint8_t 
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.color = amber;
   pkt.on = ACTUATOR_ON_IDLE_DMX;
-  pkt.seq = ++s_txSeq;
+  pkt.seq = nextTxSeq();
   pkt.level_r = r;
   pkt.level_g = g;
   pkt.level_b = b;
@@ -206,7 +232,7 @@ ActuatorCmdPacket espnowActuatorMakeIdleEndPacket() {
   pkt.magic = ACTUATOR_PROTO_MAGIC;
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.on = ACTUATOR_ON_IDLE_END;
-  pkt.seq = ++s_txSeq;
+  pkt.seq = nextTxSeq();
   return pkt;
 }
 
@@ -216,7 +242,7 @@ ActuatorCmdPacket espnowActuatorMakeDirectPacket(ActuatorColor color, uint8_t ta
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.color = (uint8_t)color;
   pkt.on = ACTUATOR_ON_DIRECT;
-  pkt.seq = ++s_txSeq;
+  pkt.seq = nextTxSeq();
   pkt.level_r = targetMask;
   pkt.level_g = on ? 1u : 0u;
   return pkt;
@@ -227,7 +253,7 @@ ActuatorCmdPacket espnowActuatorMakePurgePacket() {
   pkt.magic = ACTUATOR_PROTO_MAGIC;
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.on = ACTUATOR_ON_PURGE;
-  pkt.seq = ++s_txSeq;
+  pkt.seq = nextTxSeq();
   return pkt;
 }
 
@@ -237,7 +263,7 @@ ActuatorCmdPacket espnowActuatorMakeRgbHoldPacket(uint8_t r, uint8_t g, uint8_t 
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.color = amber;
   pkt.on = ACTUATOR_ON_RGB_HOLD;
-  pkt.seq = ++s_txSeq;
+  pkt.seq = nextTxSeq();
   pkt.level_r = r;
   pkt.level_g = g;
   pkt.level_b = b;
