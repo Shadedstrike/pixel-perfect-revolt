@@ -209,7 +209,7 @@ is not fired unless `SOLENOID_BLUE_ENABLED=1`.
 
 On a normal color press the solenoid opens immediately, its pump starts 50 ms
 later, and release stops the pump immediately while holding the air solenoid open
-for another 2 seconds. These timers are non-blocking.
+for another 1 second. These timers are non-blocking.
 
 Holding both front buttons for 40 seconds enters latched **PURGE MODE**. All three
 pumps reverse and continue until the actuator node is rebooted. Purge intentionally

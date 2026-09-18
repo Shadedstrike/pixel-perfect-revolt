@@ -31,7 +31,7 @@ static bool s_usbMonitorLogged = false;
 static bool s_setupDone = false;
 static bool s_purgeActive = false;
 static const uint32_t MOTOR_START_DELAY_MS = 50;
-static const uint32_t SOLENOID_RELEASE_HOLD_MS = 2000;
+static const uint32_t SOLENOID_RELEASE_HOLD_MS = 1000;
 struct TimedColorOutput {
   bool requested;
   bool motorStarted;
@@ -99,7 +99,7 @@ static void applyActuatorColor(ActuatorColor color, bool on) {
   if (color != ACTUATOR_COLOR_BLUE || SOLENOID_BLUE_ENABLED) {
     if (on)
       solenoidOutputSetChannel((uint8_t)color, true);
-    Serial.printf(" | sol=%s", on ? "ON" : "HOLD_2S");
+    Serial.printf(" | sol=%s", on ? "ON" : "HOLD_1S");
   }
   else
     Serial.print(" | sol=—(blue disabled)");
