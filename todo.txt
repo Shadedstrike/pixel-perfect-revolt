@@ -1,0 +1,9 @@
+sometimes during rythem game mode it can activate the scale changer mode. this should not happen.
+we need to show loading... when the rythem game mode is selected. no animation needed, just loading... so they know to wait a few sec. 
+I want to delay the pumps turning on for 50ms but keep the air solenoids with the same timing. on button release, we need to fire the air solenoids for 2 sec afterwards. 
+we need different simon patterns. the same one every time is boring. also, despite there being provision for it, there is no musical tone generated when the buttons are pressed in this mode.
+we need to utilize some sort of audio library to ensure any audio source has a filter on 25-35hz. It's critical we cancel any of these hz. 
+We added audio transducers to the project. Currently the lowest a user can go is -24 on the scale.  We need to assign a matching hz pattern to the scale played, when the scale is down in these lower ranges, but this matching pattern is like, 4-5 scales down. IE 0-200hz range. We need this
+as otherwise the transducers won't activate. Let's play both tunes, the 1in speakers should ignore the lower freqs and then the transducers can do their jobs. for this, implement Harmonic Layering: Instead of replacing the note completely, synthesize a 
+fundamental tactile sub-tone ($f_0 \in [30\text{ Hz}, 100\text{ Hz}]$) on the transducer layer while keeping the higher audible harmonic ($f_1, f_2$) 
+on the main scale so the ear still perceives the pitch accurately.
