@@ -7,3 +7,5 @@ We added audio transducers to the project. Currently the lowest a user can go is
 as otherwise the transducers won't activate. Let's play both tunes, the 1in speakers should ignore the lower freqs and then the transducers can do their jobs. for this, implement Harmonic Layering: Instead of replacing the note completely, synthesize a 
 fundamental tactile sub-tone ($f_0 \in [30\text{ Hz}, 100\text{ Hz}]$) on the transducer layer while keeping the higher audible harmonic ($f_1, f_2$) 
 on the main scale so the ear still perceives the pitch accurately.
+
+we need a 'purge' mode for the pumps. if someone holds down both front buttons for 40 sec, flash PURGE MODE, and then reverse the pumps. continue indefinitely with this. 
