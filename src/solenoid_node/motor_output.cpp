@@ -125,8 +125,18 @@ void motorOutputSetColorReverse(ActuatorColor color) {
 }
 
 void motorOutputAllReverse() {
+  // Give the H-bridges a real stopped interval before changing polarity. This
+  // avoids shoot-through protection interpreting a direct direction swap as a
+  // brake command on some TB6612-compatible boards.
+  motorOutputAllOff();
+  delay(10);
   for (const MotorPair &m : kMotors)
     motorOutputSetColorReverse(m.color);
+}
+
+void motorOutputAllForward() {
+  for (const MotorPair &m : kMotors)
+    motorOutputSetColor(m.color, true);
 }
 
 void motorOutputAllOff() {

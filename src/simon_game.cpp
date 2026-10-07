@@ -156,7 +156,7 @@ static void simonActuator(int btnIdx, bool on) {
 // Independent solenoid / motor / relay control — a plain colour command fires all
 // three at once, which cannot express "solenoid, pause, then pump".
 static void simonDirect(ActuatorColor c, uint8_t mask, bool on) {
-  const ActuatorCmdPacket pkt = espnowActuatorMakeDirectPacket(c, mask, on);
+  ActuatorCmdPacket pkt = espnowActuatorMakeDirectPacket(c, mask, on);
   espnowActuatorSend(&pkt);
 }
 

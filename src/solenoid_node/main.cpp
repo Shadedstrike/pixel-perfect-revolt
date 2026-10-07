@@ -5,7 +5,9 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <atomic>
 #include <cstring>
+#include <freertos/queue.h>
 
 #include "actuator_config.h"
 #include "actuator_protocol.h"
@@ -30,12 +32,20 @@ static bool s_espOk = false;
 static bool s_usbMonitorLogged = false;
 static bool s_setupDone = false;
 static bool s_purgeActive = false;
+static bool s_primeActive = false;
+static uint32_t s_purgeStartedMs = 0;
+static QueueHandle_t s_cmdQueue = nullptr;
+static std::atomic<uint32_t> s_cmdQueueDrops{0};
 static const uint32_t MOTOR_START_DELAY_MS = 50;
 static const uint32_t SOLENOID_RELEASE_HOLD_MS = 1000;
+// A short 67% duty cycle retains a visually continuous spray while reducing
+// fluid use and pump heat. PRIME deliberately bypasses this scheduler.
 struct TimedColorOutput {
   bool requested;
   bool motorStarted;
+  bool motorPulseOn;
   uint32_t motorStartAt;
+  uint32_t motorToggleAt;
   uint32_t solenoidOffAt;
 };
 static TimedColorOutput s_timed[ACTUATOR_COLOR_COUNT] = {};
@@ -71,20 +81,30 @@ static void onUsbMonitorConnected() {
 }
 
 static void applyActuatorColor(ActuatorColor color, bool on) {
-  if (color >= ACTUATOR_COLOR_COUNT || s_purgeActive)
+  if (color >= ACTUATOR_COLOR_COUNT || s_purgeActive || s_primeActive)
     return;
-  Serial.printf("[ACT] %s %s", serialStatusColorName(color), on ? "ON" : "OFF");
 
   TimedColorOutput &timed = s_timed[(uint8_t)color];
+  // Controller state is refreshed periodically to repair dropped ESP-NOW
+  // transitions. A refresh must not restart the motor pulse or perpetually move
+  // the delayed solenoid-OFF deadline forward.
+  if (timed.requested == on)
+    return;
+
+  Serial.printf("[ACT] %s %s", serialStatusColorName(color), on ? "ON" : "OFF");
   const uint32_t now = millis();
   timed.requested = on;
   if (on) {
     timed.solenoidOffAt = 0;
     timed.motorStartAt = now + MOTOR_START_DELAY_MS;
     timed.motorStarted = false;
+    timed.motorPulseOn = false;
+    timed.motorToggleAt = 0;
   } else {
     timed.motorStartAt = 0;
     timed.motorStarted = false;
+    timed.motorPulseOn = false;
+    timed.motorToggleAt = 0;
     timed.solenoidOffAt = now + SOLENOID_RELEASE_HOLD_MS;
   }
 
@@ -126,7 +146,7 @@ static void applyActuatorColor(ActuatorColor color, bool on) {
 }
 
 static void serviceTimedColorOutputs(uint32_t now) {
-  if (s_purgeActive)
+  if (s_purgeActive || s_primeActive)
     return;
   for (uint8_t i = 0; i < ACTUATOR_COLOR_COUNT; ++i) {
     TimedColorOutput &timed = s_timed[i];
@@ -135,8 +155,18 @@ static void serviceTimedColorOutputs(uint32_t now) {
         (int32_t)(now - timed.motorStartAt) >= 0) {
       timed.motorStartAt = 0;
       timed.motorStarted = true;
+      timed.motorPulseOn = true;
+      timed.motorToggleAt = now + ACTUATOR_MOTOR_PULSE_ON_MS;
       if (motorOutputHasMotor(c))
         motorOutputSetColor(c, true);
+    }
+    if (timed.requested && timed.motorStarted && timed.motorToggleAt &&
+        (int32_t)(now - timed.motorToggleAt) >= 0) {
+      timed.motorPulseOn = !timed.motorPulseOn;
+      timed.motorToggleAt =
+          now + (timed.motorPulseOn ? ACTUATOR_MOTOR_PULSE_ON_MS : ACTUATOR_MOTOR_PULSE_OFF_MS);
+      if (motorOutputHasMotor(c))
+        motorOutputSetColor(c, timed.motorPulseOn);
     }
     if (!timed.requested && timed.solenoidOffAt && (int32_t)(now - timed.solenoidOffAt) >= 0) {
       timed.solenoidOffAt = 0;
@@ -179,8 +209,7 @@ static void actuatorRxWatchdog(uint32_t now) {
   actuatorForceAllOutputsOff("ESP-NOW timeout");
 }
 
-static void onEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
-  (void)mac;
+static void processEspnowCmd(const ActuatorCmdPacket *pkt) {
   ++s_rxCount;
   s_lastRxMs = millis();
   s_failsafeTripped = false;
@@ -189,14 +218,34 @@ static void onEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
     if (!s_purgeActive) {
       actuatorForceAllOutputsOff("enter purge");
       s_purgeActive = true;
+      s_purgeStartedMs = millis();
+      s_primeActive = false;
       motorOutputAllReverse();
-      Serial.println("[PURGE] ACTIVE — all pumps reverse until actuator reboot");
+      Serial.println("[PURGE] ACTIVE — all pumps reverse (IN1=LOW, IN2=HIGH) for five minutes");
     }
     return;
   }
 
   if (s_purgeActive)
     return;
+
+  if (pkt->on == ACTUATOR_ON_PRIME) {
+    const bool on = pkt->level_g != 0;
+    actuatorForceAllOutputsOff(on ? "enter prime" : "exit prime");
+    s_primeActive = on;
+    if (on)
+      motorOutputAllForward();
+    Serial.printf("[PRIME] %s — all pumps %s\n", on ? "ACTIVE" : "OFF", on ? "continuous" : "stopped");
+    return;
+  }
+
+  // PRIME keepalives are exclusively PRIME packets. The first ordinary command
+  // is therefore also an idempotent escape hatch if PRIME_OFF was dropped.
+  if (s_primeActive) {
+    actuatorForceAllOutputsOff("ordinary command exits prime");
+    s_primeActive = false;
+    Serial.println("[PRIME] OFF — normal command received");
+  }
 
   if (pkt->on == ACTUATOR_ON_BUBBLE_PARTY) {
     onBubblePartyCmd(pkt);
@@ -229,12 +278,15 @@ static void onEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
       if (mask & ACTUATOR_TARGET_SOLENOID)
         s_timed[(uint8_t)c].solenoidOffAt = 0;
       if (mask & ACTUATOR_TARGET_MOTOR) {
+        s_timed[(uint8_t)c].requested = false;
         s_timed[(uint8_t)c].motorStartAt = 0;
         s_timed[(uint8_t)c].motorStarted = on;
+        s_timed[(uint8_t)c].motorPulseOn = on;
+        s_timed[(uint8_t)c].motorToggleAt = 0;
       }
     }
     // Independent targets — a plain colour ON cannot separate these.
-    if ((mask & ACTUATOR_TARGET_SOLENOID) && c != ACTUATOR_COLOR_BLUE)
+    if ((mask & ACTUATOR_TARGET_SOLENOID) && (c != ACTUATOR_COLOR_BLUE || SOLENOID_BLUE_ENABLED))
       solenoidOutputSetChannel((uint8_t)c, on);
     if ((mask & ACTUATOR_TARGET_MOTOR) && motorOutputHasMotor(c))
       motorOutputSetColor(c, on);
@@ -255,13 +307,46 @@ static void onEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
   applyActuatorColor((ActuatorColor)pkt->color, pkt->on != 0);
 }
 
+// ESP-NOW invokes its callback on the Wi-Fi task/core. Never touch GPIO, I2C,
+// DMX, or loop-owned timing state there. Queue a value-copy and let loop() remain
+// the sole owner of all physical outputs.
+static void queueEspnowCmd(const ActuatorCmdPacket *pkt, const uint8_t mac[6]) {
+  (void)mac;
+  if (!s_cmdQueue || !pkt)
+    return;
+  if (xQueueSend(s_cmdQueue, pkt, 0) == pdTRUE)
+    return;
+
+  // Prefer fresh state under an exceptional backlog. Discarding the oldest
+  // packet is safer than losing a recent OFF/PRIME/PURGE command.
+  ActuatorCmdPacket discarded;
+  xQueueReceive(s_cmdQueue, &discarded, 0);
+  xQueueSend(s_cmdQueue, pkt, 0);
+  ++s_cmdQueueDrops;
+}
+
+static void serviceEspnowCommands() {
+  if (!s_cmdQueue)
+    return;
+  ActuatorCmdPacket pkt;
+  uint8_t serviced = 0;
+  while (serviced < 32 && xQueueReceive(s_cmdQueue, &pkt, 0) == pdTRUE) {
+    processEspnowCmd(&pkt);
+    ++serviced;
+  }
+  static uint32_t lastReportedDrops = 0;
+  const uint32_t drops = s_cmdQueueDrops.load();
+  if (drops != lastReportedDrops) {
+    lastReportedDrops = drops;
+    Serial.printf("[ESPNOW] command queue overflow drops=%u\n", (unsigned)drops);
+  }
+}
+
 static void debugHeartbeat(uint32_t now) {
   static uint32_t lastHb = 0;
-  static uint8_t hbCount = 0;
   if (now - lastHb < (uint32_t)ACTUATOR_HB_MS)
     return;
   lastHb = now;
-  ++hbCount;
 
   const uint32_t sinceRx = s_lastRxMs ? (now - s_lastRxMs) : 0;
   const char *lastColor =
@@ -280,8 +365,9 @@ static void debugHeartbeat(uint32_t now) {
                 s_lastRxMs ? (unsigned long)sinceRx : 0UL, (unsigned)ESPNOW_WIFI_CHANNEL,
                 WiFi.macAddress().c_str(), (unsigned long)(now / 1000));
 
-  if ((hbCount % 6) == 0)
-    solenoidOutputPrintI2cScan();
+  // Do not run a 126-address I2C scan in normal operation. On a sick bus each
+  // address can consume the Wire timeout, stalling command service for seconds.
+  // The heartbeat's targeted MCP probe above is sufficient and bounded.
 }
 
 static void debugAlive(uint32_t now) {
@@ -323,7 +409,10 @@ void setup() {
   s_dmxOk = dmxOutputBegin();
 
   Serial.println("[BOOT] ESP-NOW RX...");
-  s_espOk = espnowActuatorBeginRx(onEspnowCmd);
+  s_cmdQueue = xQueueCreate(32, sizeof(ActuatorCmdPacket));
+  if (!s_cmdQueue)
+    Serial.println("[BOOT] ERROR: ESP-NOW command queue allocation failed");
+  s_espOk = s_cmdQueue && espnowActuatorBeginRx(queueEspnowCmd);
 
   solenoidOutputAllOff();
   relayOutputAllOff();
@@ -345,7 +434,13 @@ void loop() {
   if (Serial && !s_usbMonitorLogged)
     onUsbMonitorConnected();
 
+  serviceEspnowCommands();
   const uint32_t now = millis();
+  if (s_purgeActive && now - s_purgeStartedMs >= (uint32_t)ACTUATOR_PURGE_DURATION_MS) {
+    motorOutputAllOff();
+    s_purgeActive = false;
+    Serial.println("[PURGE] COMPLETE — five minutes elapsed; all pumps stopped");
+  }
   serviceTimedColorOutputs(now);
   debugAlive(now);
   debugHeartbeat(now);

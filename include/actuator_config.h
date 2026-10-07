@@ -7,9 +7,19 @@
 #define ESPNOW_WIFI_CHANNEL 1
 #endif
 
-// Legacy pulse width (unused — side buttons now hold ON while pressed).
-#ifndef ACTUATOR_PULSE_MS
-#define ACTUATOR_PULSE_MS 250
+// Normal spray pump duty cycle. 200 ms on / 100 ms off is 67% duty while the
+// solenoid remains open, which reads as continuous spray. PRIME bypasses this.
+#ifndef ACTUATOR_MOTOR_PULSE_ON_MS
+#define ACTUATOR_MOTOR_PULSE_ON_MS 200
+#endif
+#ifndef ACTUATOR_MOTOR_PULSE_OFF_MS
+#define ACTUATOR_MOTOR_PULSE_OFF_MS 100
+#endif
+
+// Both boards enforce this independently. Repeated PURGE packets do not extend
+// the actuator deadline.
+#ifndef ACTUATOR_PURGE_DURATION_MS
+#define ACTUATOR_PURGE_DURATION_MS 300000u
 #endif
 
 #ifndef ACTUATOR_HB_MS

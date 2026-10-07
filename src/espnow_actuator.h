@@ -12,7 +12,9 @@ bool espnowActuatorBeginRx(EspnowActuatorRecvFn onCmd);
 // Match receiver to controller AP channel when known (call after WiFi connected).
 void espnowActuatorSetWifiChannel(uint8_t channel);
 
-bool espnowActuatorSend(const ActuatorCmdPacket *pkt);
+// Assigns pkt->seq while holding the TX mutex, then sends it. The packet must be
+// mutable so sequence allocation and air-order cannot diverge across tasks.
+bool espnowActuatorSend(ActuatorCmdPacket *pkt);
 bool espnowActuatorReady();
 
 ActuatorCmdPacket espnowActuatorMakePacket(ActuatorColor color, bool on);
@@ -24,5 +26,6 @@ ActuatorCmdPacket espnowActuatorMakeRgbHoldPacket(uint8_t r, uint8_t g, uint8_t 
 // Independent solenoid / motor / relay control for one colour (ACTUATOR_ON_DIRECT).
 ActuatorCmdPacket espnowActuatorMakeDirectPacket(ActuatorColor color, uint8_t targetMask, bool on);
 ActuatorCmdPacket espnowActuatorMakePurgePacket();
+ActuatorCmdPacket espnowActuatorMakePrimePacket(bool on);
 
 #endif

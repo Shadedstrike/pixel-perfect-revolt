@@ -5,13 +5,19 @@
 #include "serial_status.h"
 
 #include <WiFi.h>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 
-static uint32_t s_txCount = 0;
-static bool s_purgeActive = false;
+static std::atomic<uint32_t> s_txCount{0};
+static std::atomic<bool> s_purgeActive{false};
+static std::atomic<bool> s_primeActive{false};
+static bool s_primeExitArmed = false;
+static bool s_purgeNeedsRelease = false;
+static uint32_t s_purgeStartedMs = 0;
 static uint32_t s_lastPurgeTxMs = 0;
-static bool actuatorPublishPacket(const ActuatorCmdPacket *pkt, const char *label);
+static uint32_t s_lastPrimeTxMs = 0;
+static bool actuatorPublishPacket(ActuatorCmdPacket *pkt, const char *label);
 static void actuatorForceAllColorsOff();
 
 static const char *colorSlotName(int slot) {
@@ -59,19 +65,19 @@ static bool sideColorPhysicallyDown(const bool down[10], int slot) {
   }
 }
 
-static bool s_colorRemoteOn[4] = {};
+static std::atomic<bool> s_colorRemoteOn[4];
 
-static bool actuatorPublishColor(ActuatorColor color, bool on) {
+static bool actuatorPublishColor(ActuatorColor color, bool on, bool verbose = true) {
   if (color >= ACTUATOR_COLOR_COUNT)
     return false;
   if (!espnowActuatorReady())
     return false;
 
-  const ActuatorCmdPacket pkt = espnowActuatorMakePacket(color, on);
+  ActuatorCmdPacket pkt = espnowActuatorMakePacket(color, on);
   const bool ok = espnowActuatorSend(&pkt);
   if (!ok) {
     Serial.printf("[ESPNOW] tx FAIL color=%u on=%d seq=%u\n", (unsigned)color, on ? 1 : 0, (unsigned)pkt.seq);
-  } else {
+  } else if (verbose) {
     ++s_txCount;
     Serial.printf("[ESPNOW] tx color=%s on=%d seq=%u total_tx=%u\n", serialStatusColorName(color), on ? 1 : 0,
                   (unsigned)pkt.seq, (unsigned)s_txCount);
@@ -80,19 +86,31 @@ static bool actuatorPublishColor(ActuatorColor color, bool on) {
 }
 
 void actuatorLinkSyncSideColumnHolds(const bool down[10]) {
+  if (s_purgeActive || s_primeActive)
+    return;
+  static uint32_t lastRefreshMs = 0;
+  static uint8_t refreshSlot = 0;
+  const uint32_t now = millis();
+  const bool refresh = now - lastRefreshMs >= 250u;
+  if (refresh) {
+    lastRefreshMs = now;
+    refreshSlot = (uint8_t)((refreshSlot + 1u) & 3u);
+  }
   for (int slot = 0; slot < 4; slot++) {
     const bool phys = sideColorPhysicallyDown(down, slot);
-    const bool remote = s_colorRemoteOn[slot];
-    if (phys == remote)
+    const bool remote = s_colorRemoteOn[slot].load();
+    const bool keepalive = refresh && slot == refreshSlot;
+    if (phys == remote && !keepalive)
       continue;
 
     const ActuatorColor color = colorSlotToEnum(slot);
     if (color >= ACTUATOR_COLOR_COUNT)
       continue;
 
-    s_colorRemoteOn[slot] = phys;
-    Serial.printf("[ACT] sync %s -> %s\n", colorSlotName(slot), phys ? "ON" : "OFF");
-    actuatorPublishColor(color, phys);
+    if (phys != remote)
+      Serial.printf("[ACT] sync %s -> %s\n", colorSlotName(slot), phys ? "ON" : "OFF");
+    if (actuatorPublishColor(color, phys, phys != remote))
+      s_colorRemoteOn[slot].store(phys);
   }
 }
 
@@ -105,13 +123,13 @@ static void actuatorHeartbeat() {
 
   int activeHolds = 0;
   for (int i = 0; i < 4; i++) {
-    if (s_colorRemoteOn[i])
+    if (s_colorRemoteOn[i].load())
       ++activeHolds;
   }
 
   Serial.printf("[HB] role=CONTROLLER  ESPNOW=%s  ch=%u  mac=%s  tx=%u  active_holds=%d  uptime=%lus\n",
                 espnowActuatorReady() ? "OK" : "DOWN", (unsigned)ESPNOW_WIFI_CHANNEL, WiFi.macAddress().c_str(),
-                (unsigned)s_txCount, activeHolds, (unsigned long)(now / 1000));
+                (unsigned)s_txCount.load(), activeHolds, (unsigned long)(now / 1000));
 }
 
 bool actuatorLinkSetup() {
@@ -127,11 +145,24 @@ bool actuatorLinkSetup() {
 
 void actuatorLinkLoop() {
   actuatorHeartbeat();
-  // Purge is latched on both boards. Repeat the command so a single dropped
-  // broadcast cannot leave the controller displaying PURGE while pumps stay idle.
-  if (s_purgeActive && millis() - s_lastPurgeTxMs >= 500u) {
-    s_lastPurgeTxMs = millis();
-    const ActuatorCmdPacket pkt = espnowActuatorMakePurgePacket();
+  const uint32_t now = millis();
+  // End locally at five minutes as well as on the actuator. Check expiry before
+  // retransmitting so no late keepalive can start a second purge cycle.
+  if (s_purgeActive && now - s_purgeStartedMs >= (uint32_t)ACTUATOR_PURGE_DURATION_MS) {
+    s_purgeActive = false;
+    actuatorForceAllColorsOff();
+    Serial.println("[PURGE] COMPLETE — five minutes elapsed; normal operation restored after button release");
+  }
+  // Repeat while active so a single dropped broadcast cannot leave the UI in
+  // PURGE while the pumps stay idle.
+  if (s_purgeActive && now - s_lastPurgeTxMs >= 500u) {
+    s_lastPurgeTxMs = now;
+    ActuatorCmdPacket pkt = espnowActuatorMakePurgePacket();
+    espnowActuatorSend(&pkt);
+  }
+  if (s_primeActive && now - s_lastPrimeTxMs >= 500u) {
+    s_lastPrimeTxMs = now;
+    ActuatorCmdPacket pkt = espnowActuatorMakePrimePacket(true);
     espnowActuatorSend(&pkt);
   }
 }
@@ -140,7 +171,15 @@ void actuatorLinkPurgeCheck(const bool down[10], uint32_t nowMs) {
   static uint32_t frontHoldStart = 0;
   if (s_purgeActive)
     return;
-  if (!(down[4] && down[5])) {
+  const bool bothFront = down[4] && down[5];
+  if (s_purgeNeedsRelease) {
+    if (!bothFront) {
+      s_purgeNeedsRelease = false;
+      frontHoldStart = 0;
+    }
+    return;
+  }
+  if (!bothFront) {
     frontHoldStart = 0;
     return;
   }
@@ -148,16 +187,71 @@ void actuatorLinkPurgeCheck(const bool down[10], uint32_t nowMs) {
     frontHoldStart = nowMs;
   if (nowMs - frontHoldStart < 40000u)
     return;
-  const ActuatorCmdPacket pkt = espnowActuatorMakePurgePacket();
+  ActuatorCmdPacket pkt = espnowActuatorMakePurgePacket();
   if (actuatorPublishPacket(&pkt, "purge")) {
     s_purgeActive = true;
+    s_purgeNeedsRelease = true;
+    s_purgeStartedMs = nowMs;
     s_lastPurgeTxMs = nowMs;
     actuatorForceAllColorsOff();
-    Serial.println("[PURGE] ACTIVE — pumps reversing indefinitely");
+    Serial.println("[PURGE] ACTIVE — all pumps reverse for five minutes");
   }
 }
 
 bool actuatorLinkPurgeActive() { return s_purgeActive; }
+
+void actuatorLinkPrimeCheck(const bool down[10], const bool edgeDown[10], uint32_t nowMs) {
+  static uint32_t frontRightHoldStart = 0;
+  if (s_purgeActive)
+    return;
+
+  if (s_primeActive) {
+    bool anyDown = false;
+    bool anyEdgeDown = false;
+    for (int i = 0; i < 10; ++i) {
+      anyDown |= down[i];
+      anyEdgeDown |= edgeDown[i];
+    }
+    if (!anyDown)
+      s_primeExitArmed = true; // do not let the trigger hold immediately cancel PRIME
+    if (!s_primeExitArmed || !anyEdgeDown)
+      return;
+
+    ActuatorCmdPacket pkt = espnowActuatorMakePrimePacket(false);
+    actuatorPublishPacket(&pkt, "prime_off");
+    actuatorForceAllColorsOff();
+    s_primeActive.store(false);
+    s_primeExitArmed = false;
+    Serial.println("[PRIME] stopped — normal button operation restored");
+    return;
+  }
+
+  // PRIME is deliberately an exclusive gesture: only front-right may be held.
+  bool onlyFrontRight = down[5];
+  for (int i = 0; i < 10; ++i) {
+    if (i != 5 && down[i])
+      onlyFrontRight = false;
+  }
+  if (!onlyFrontRight) {
+    frontRightHoldStart = 0;
+    return;
+  }
+  if (!frontRightHoldStart)
+    frontRightHoldStart = nowMs;
+  if (nowMs - frontRightHoldStart < 25000u)
+    return;
+
+  actuatorForceAllColorsOff();
+  ActuatorCmdPacket pkt = espnowActuatorMakePrimePacket(true);
+  if (actuatorPublishPacket(&pkt, "prime_on")) {
+    s_primeActive = true;
+    s_primeExitArmed = false;
+    s_lastPrimeTxMs = nowMs;
+    Serial.println("[PRIME] ACTIVE — all pumps continuous; release, then press any button to stop");
+  }
+}
+
+bool actuatorLinkPrimeActive() { return s_primeActive; }
 
 static uint8_t matchLevel(bool active) { return active ? (uint8_t)255 : 0; }
 
@@ -196,14 +290,14 @@ static bool actuatorPublishBubblePartyExtend(const bool down[10], uint32_t nowMs
     return false;
   }
 
-  const ActuatorCmdPacket pkt = espnowActuatorMakeBubblePartyPacket(r, g, b, w, amber);
+  ActuatorCmdPacket pkt = espnowActuatorMakeBubblePartyPacket(r, g, b, w, amber);
   const bool ok = espnowActuatorSend(&pkt);
   Serial.printf("[ACT] bubble fan +%ums tx %s  interval=%u  seq=%u\n", (unsigned)BUBBLE_PARTY_MS, ok ? "OK" : "FAIL",
                 (unsigned)intervalIndex, (unsigned)pkt.seq);
   return ok;
 }
 
-static bool actuatorPublishPacket(const ActuatorCmdPacket *pkt, const char *label) {
+static bool actuatorPublishPacket(ActuatorCmdPacket *pkt, const char *label) {
   if (!espnowActuatorReady() || !pkt)
     return false;
   const bool ok = espnowActuatorSend(pkt);
@@ -212,6 +306,16 @@ static bool actuatorPublishPacket(const ActuatorCmdPacket *pkt, const char *labe
 }
 
 void actuatorLinkBubbleHoldCheck(const bool down[10], uint32_t nowMs) {
+  // Front-right alone is reserved for the 25 s PRIME gesture. Do not start the
+  // bubble-party effect partway through that deliberate hold.
+  bool onlyFrontRight = down[5];
+  for (int i = 0; i < 10; ++i) {
+    if (i != 5 && down[i])
+      onlyFrontRight = false;
+  }
+  if (onlyFrontRight)
+    return;
+
   bool anyDown = false;
   for (int i = 0; i < 10; i++) {
     if (down[i]) {
@@ -263,7 +367,7 @@ void actuatorLinkSyncDmxRgb(const bool down[10], uint32_t nowMs, bool synthIdle)
   const bool sideActive = r || g || b || amber;
   if (!sideActive) {
     if (lastR || lastG || lastB || lastA) {
-      const ActuatorCmdPacket pkt = espnowActuatorMakeRgbHoldPacket(0, 0, 0, 0, 0);
+      ActuatorCmdPacket pkt = espnowActuatorMakeRgbHoldPacket(0, 0, 0, 0, 0);
       actuatorPublishPacket(&pkt, "rgb_hold_clear");
       lastR = lastG = lastB = lastA = 0;
     }
@@ -279,7 +383,7 @@ void actuatorLinkSyncDmxRgb(const bool down[10], uint32_t nowMs, bool synthIdle)
   lastB = b;
   lastA = amber;
 
-  const ActuatorCmdPacket pkt = espnowActuatorMakeRgbHoldPacket(r, g, b, w, amber);
+  ActuatorCmdPacket pkt = espnowActuatorMakeRgbHoldPacket(r, g, b, w, amber);
   actuatorPublishPacket(&pkt, "rgb_hold");
 }
 
@@ -288,7 +392,7 @@ static void actuatorForceAllColorsOff() {
     const ActuatorColor color = colorSlotToEnum(slot);
     if (color >= ACTUATOR_COLOR_COUNT)
       continue;
-    s_colorRemoteOn[slot] = false;
+    s_colorRemoteOn[slot].store(false);
     actuatorPublishColor(color, false);
   }
 }
@@ -303,7 +407,7 @@ void actuatorLinkUpdateIdle(bool synthIdle, uint32_t nowMs, uint8_t mirrorR, uin
 
   if (synthIdle && !lastSynthIdle) {
     Serial.println("[ACT] synth idle enter — kill bubble fan, release holds, start DMX idle animation");
-    const ActuatorCmdPacket killPkt = espnowActuatorMakeBubbleKillPacket();
+    ActuatorCmdPacket killPkt = espnowActuatorMakeBubbleKillPacket();
     actuatorPublishPacket(&killPkt, "bubble_kill");
     actuatorForceAllColorsOff();
     lastIdleTxMs = 0;
@@ -311,7 +415,7 @@ void actuatorLinkUpdateIdle(bool synthIdle, uint32_t nowMs, uint8_t mirrorR, uin
 
   if (!synthIdle && lastSynthIdle) {
     Serial.println("[ACT] synth idle exit — restore button-driven DMX");
-    const ActuatorCmdPacket endPkt = espnowActuatorMakeIdleEndPacket();
+    ActuatorCmdPacket endPkt = espnowActuatorMakeIdleEndPacket();
     actuatorPublishPacket(&endPkt, "idle_end");
   }
 
@@ -324,7 +428,7 @@ void actuatorLinkUpdateIdle(bool synthIdle, uint32_t nowMs, uint8_t mirrorR, uin
     return;
   lastIdleTxMs = nowMs;
 
-  const ActuatorCmdPacket pkt = espnowActuatorMakeIdleDmxPacket(0, 0, 0, 0, 0);
+  ActuatorCmdPacket pkt = espnowActuatorMakeIdleDmxPacket(0, 0, 0, 0, 0);
   actuatorPublishPacket(&pkt, "idle_anim");
 }
 

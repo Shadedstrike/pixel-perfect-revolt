@@ -14,6 +14,9 @@ static uint32_t s_txSeq = 0;
 static uint32_t s_txOk = 0;
 static uint32_t s_txFail = 0;
 static uint32_t s_rxBad = 0;
+static uint32_t s_lastRxSeq = 0;
+static uint32_t s_lastOrderedRxMs = 0;
+static bool s_haveRxSeq = false;
 static SemaphoreHandle_t s_sendMutex = nullptr;
 static portMUX_TYPE s_seqMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -120,6 +123,21 @@ static void onEspnowRecv(const uint8_t *mac, const uint8_t *data, int len) {
                   (unsigned)pkt.version, (unsigned)pkt.color, (unsigned)pkt.on, (unsigned)s_rxBad);
     return;
   }
+  // Broadcast delivery can be delayed/reordered. Without this guard an old ON
+  // arriving after its OFF briefly re-energizes a pump (most often noticed on
+  // red). Permit a fresh sequence after radio silence so a controller reboot,
+  // whose counter restarts at zero, is accepted promptly.
+  const uint32_t now = millis();
+  if (s_haveRxSeq && now - s_lastOrderedRxMs < (uint32_t)ACTUATOR_RX_FAILSAFE_MS &&
+      (int32_t)(pkt.seq - s_lastRxSeq) <= 0) {
+    ++s_rxBad;
+    Serial.printf("[ESPNOW] rx stale seq=%u last=%u bad=%u\n", (unsigned)pkt.seq, (unsigned)s_lastRxSeq,
+                  (unsigned)s_rxBad);
+    return;
+  }
+  s_lastRxSeq = pkt.seq;
+  s_lastOrderedRxMs = now;
+  s_haveRxSeq = true;
   char macStr[18];
   formatMac(macStr, sizeof(macStr), mac);
   if (pkt.on == ACTUATOR_ON_BUBBLE_PARTY) {
@@ -143,6 +161,8 @@ static void onEspnowRecv(const uint8_t *mac, const uint8_t *data, int len) {
     }
   } else if (pkt.on == ACTUATOR_ON_PURGE) {
     Serial.printf("[ESPNOW] rx PURGE seq=%u\n", (unsigned)pkt.seq);
+  } else if (pkt.on == ACTUATOR_ON_PRIME) {
+    Serial.printf("[ESPNOW] rx PRIME %s seq=%u\n", pkt.level_g ? "ON" : "OFF", (unsigned)pkt.seq);
   } else {
     Serial.printf("[ESPNOW] rx from %s color=%s on=%u seq=%u\n", macStr, serialStatusColorNameU8(pkt.color),
                   (unsigned)pkt.on, (unsigned)pkt.seq);
@@ -167,7 +187,7 @@ bool espnowActuatorBeginRx(EspnowActuatorRecvFn onCmd) {
 
 bool espnowActuatorReady() { return s_ready; }
 
-bool espnowActuatorSend(const ActuatorCmdPacket *pkt) {
+bool espnowActuatorSend(ActuatorCmdPacket *pkt) {
   if (!s_ready || !s_isTx || !pkt)
     return false;
   // Input sampling and the main/UI loop both transmit. Serialize the ESP-IDF call
@@ -175,6 +195,7 @@ bool espnowActuatorSend(const ActuatorCmdPacket *pkt) {
   // the high-priority input task.
   if (!s_sendMutex || xSemaphoreTake(s_sendMutex, pdMS_TO_TICKS(25)) != pdTRUE)
     return false;
+  pkt->seq = nextTxSeq();
   const bool ok = esp_now_send(kBroadcastMac, reinterpret_cast<const uint8_t *>(pkt), sizeof(ActuatorCmdPacket)) == ESP_OK;
   xSemaphoreGive(s_sendMutex);
   return ok;
@@ -186,7 +207,6 @@ ActuatorCmdPacket espnowActuatorMakePacket(ActuatorColor color, bool on) {
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.color = (uint8_t)color;
   pkt.on = on ? ACTUATOR_ON_ON : ACTUATOR_ON_OFF;
-  pkt.seq = nextTxSeq();
   return pkt;
 }
 
@@ -196,7 +216,6 @@ ActuatorCmdPacket espnowActuatorMakeBubblePartyPacket(uint8_t r, uint8_t g, uint
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.color = amber;
   pkt.on = ACTUATOR_ON_BUBBLE_PARTY;
-  pkt.seq = nextTxSeq();
   pkt.level_r = r;
   pkt.level_g = g;
   pkt.level_b = b;
@@ -209,7 +228,6 @@ ActuatorCmdPacket espnowActuatorMakeBubbleKillPacket() {
   pkt.magic = ACTUATOR_PROTO_MAGIC;
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.on = ACTUATOR_ON_BUBBLE_KILL;
-  pkt.seq = nextTxSeq();
   return pkt;
 }
 
@@ -219,7 +237,6 @@ ActuatorCmdPacket espnowActuatorMakeIdleDmxPacket(uint8_t r, uint8_t g, uint8_t 
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.color = amber;
   pkt.on = ACTUATOR_ON_IDLE_DMX;
-  pkt.seq = nextTxSeq();
   pkt.level_r = r;
   pkt.level_g = g;
   pkt.level_b = b;
@@ -232,7 +249,6 @@ ActuatorCmdPacket espnowActuatorMakeIdleEndPacket() {
   pkt.magic = ACTUATOR_PROTO_MAGIC;
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.on = ACTUATOR_ON_IDLE_END;
-  pkt.seq = nextTxSeq();
   return pkt;
 }
 
@@ -242,7 +258,6 @@ ActuatorCmdPacket espnowActuatorMakeDirectPacket(ActuatorColor color, uint8_t ta
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.color = (uint8_t)color;
   pkt.on = ACTUATOR_ON_DIRECT;
-  pkt.seq = nextTxSeq();
   pkt.level_r = targetMask;
   pkt.level_g = on ? 1u : 0u;
   return pkt;
@@ -253,7 +268,15 @@ ActuatorCmdPacket espnowActuatorMakePurgePacket() {
   pkt.magic = ACTUATOR_PROTO_MAGIC;
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.on = ACTUATOR_ON_PURGE;
-  pkt.seq = nextTxSeq();
+  return pkt;
+}
+
+ActuatorCmdPacket espnowActuatorMakePrimePacket(bool on) {
+  ActuatorCmdPacket pkt = {};
+  pkt.magic = ACTUATOR_PROTO_MAGIC;
+  pkt.version = ACTUATOR_PROTO_VERSION;
+  pkt.on = ACTUATOR_ON_PRIME;
+  pkt.level_g = on ? 1u : 0u;
   return pkt;
 }
 
@@ -263,7 +286,6 @@ ActuatorCmdPacket espnowActuatorMakeRgbHoldPacket(uint8_t r, uint8_t g, uint8_t 
   pkt.version = ACTUATOR_PROTO_VERSION;
   pkt.color = amber;
   pkt.on = ACTUATOR_ON_RGB_HOLD;
-  pkt.seq = nextTxSeq();
   pkt.level_r = r;
   pkt.level_g = g;
   pkt.level_b = b;

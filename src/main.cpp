@@ -479,6 +479,7 @@ void loop(){
 
   actuatorLinkBubbleHoldCheck(down, now);
   actuatorLinkPurgeCheck(down, now);
+  actuatorLinkPrimeCheck(down, edgeDownArr, now);
 
   // Pump rhythm audio before game logic so stream-active checks see a fed decoder.
   if (rhythmGameOwnsAudioOutput())
@@ -511,7 +512,7 @@ void loop(){
   }
 
   if (!rhythmGameSuppressNormalUi() && !simonGameSuppressNormalUi() && !patternModeSuppressNormalUi() &&
-      !actuatorLinkPurgeActive()) {
+      !actuatorLinkPurgeActive() && !actuatorLinkPrimeActive()) {
   // ---- SCALES: hold both front (16+46) for 1.5 seconds to switch scale
   
   // Initialize bothHoldStart when both buttons are first pressed

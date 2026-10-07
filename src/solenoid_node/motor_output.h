@@ -9,6 +9,7 @@ void motorOutputEarlyInit();
 void motorOutputSetColor(ActuatorColor color, bool on);
 void motorOutputSetColorReverse(ActuatorColor color);
 void motorOutputAllReverse();
+void motorOutputAllForward();
 void motorOutputAllOff();
 bool motorOutputHasMotor(ActuatorColor color);
 bool motorOutputAnyOn();

@@ -98,8 +98,9 @@ never observed — no ESP-NOW ON/OFF was sent and **the relay and solenoids did 
 to fast taps during songs**, while working fine outside song mode.
 
 `inputFastPoll()` samples all ten keys, latches edges, and pushes side-column holds
-straight to the actuator link. It runs once per `loop()` **and** from inside
-`rhythmGameAudioPump()`, so actuator latency no longer depends on frame length.
+straight to the actuator link. A dedicated high-priority task runs it every 2 ms,
+so actuator latency no longer depends on LCD, game-loop, or MP3 frame length. If
+the task cannot start, the main loop provides a fallback poll.
 
 - Edges are sticky until `inputFastPollTake()` consumes them, so a press/release pair
   inside one frame survives. Both `edgeDown` and `edgeUp` can therefore be true in the
@@ -120,14 +121,16 @@ straight to the actuator link. It runs once per `loop()` **and** from inside
 |---------|---------|-----------------|
 | `ESPNOW_WIFI_CHANNEL` | `1` | WiFi/ESP-NOW radio channel. **Must match on controller and actuator.** Try `6` or `11` if interference. |
 | `ACTUATOR_HB_MS` | `5000` | Serial heartbeat log interval on both sides. |
-| `ACTUATOR_PULSE_MS` | `250` | Legacy; unused (hold-while-pressed replaced pulse). |
+| `ACTUATOR_MOTOR_PULSE_ON_MS` | `200` | Normal spray pump ON portion. Solenoid remains open. |
+| `ACTUATOR_MOTOR_PULSE_OFF_MS` | `100` | Normal spray pump OFF portion (defaults to 67% duty overall). PRIME bypasses pulsing. |
+| `ACTUATOR_PURGE_DURATION_MS` | `300000` | Reverse-pump purge duration: five minutes. Enforced independently on both boards. |
 | `BUBBLE_HOLD_TRIGGER_MS` | `2000` | Hold **any** button this long → one bubble fan burst. |
 | `BUBBLE_PARTY_MS` | `2000` | How long the bubble **fan** runs per burst (not stackable; re-arm after all buttons released). |
 | `BUBBLE_FAN_RAMP_UP_MS` | `1500` | Fan DMX 1CH ramps from min → max over this time (soft start). |
 | `BUBBLE_FAN_RAMP_DOWN_MS` | `500` | Fan ramps down in the last portion of the burst. |
 | `ACTUATOR_IDLE_DMX_MS` | `100` | While synth idle, controller sends idle keepalive every 10 Hz; actuator runs local PAR/bubble animation. |
 | `ACTUATOR_RGB_SYNC_MS` | `50` | While side buttons held, combined RGB DMX packet rate (~20 Hz). |
-| `ACTUATOR_RX_FAILSAFE_MS` | `3000` | **Actuator only:** if a solenoid is ON and no ESP-NOW for this long → force all outputs off. |
+| `ACTUATOR_RX_FAILSAFE_MS` | `3000` | **Actuator only:** if any solenoid, relay, or motor is ON and no ESP-NOW arrives for this long → force all outputs off. |
 
 ---
 
@@ -135,17 +138,17 @@ straight to the actuator link. It runs once per `loop()` **and** from inside
 
 | Setting | Value | What it changes |
 |---------|-------|-----------------|
-| `ACTUATOR_PROTO_VERSION` | `4` | Must match on both boards. Bump + reflash both when changing packet layout. |
-| `ACTUATOR_ON_*` | — | Command types: color ON/OFF, bubble party, bubble kill, idle DMX, idle end, RGB hold. |
+| `ACTUATOR_PROTO_VERSION` | `6` | Must match on both boards. Bump + reflash both when changing packet layout. |
+| `ACTUATOR_ON_*` | — | Command types: color ON/OFF, bubble party/kill, idle DMX/end, RGB hold, direct output, purge, and prime. |
 
 Color mapping (side buttons → actuator):
 
 | Button column | `ActuatorColor` | Solenoid MCP ch | Motor | Relay |
 |---------------|-----------------|-----------------|-------|-------|
-| Yellow (top) | `YELLOW` | 3 | — | yes |
-| Blue | `BLUE` | 2 | — (**solenoid disabled in firmware**) | yes |
-| Green | `GREEN` | 1 | green driver | yes |
-| Red (bottom) | `RED` | 0 | red driver | yes |
+| Yellow (top) | `YELLOW` | 0 | yellow driver | yes |
+| Blue | `BLUE` | 1 (**disabled in firmware**) | — | yes |
+| Green | `GREEN` | 2 | green driver | yes |
+| Red (bottom) | `RED` | 3 | red driver | yes |
 
 Yellow also runs the yellow motor driver. The relay on GPIO 16 is closed while
 **any** of the four is held.
@@ -211,9 +214,10 @@ On a normal color press the solenoid opens immediately, its pump starts 50 ms
 later, and release stops the pump immediately while holding the air solenoid open
 for another 1 second. These timers are non-blocking.
 
-Holding both front buttons for 40 seconds enters latched **PURGE MODE**. All three
-pumps reverse and continue until the actuator node is rebooted. Purge intentionally
-ignores later normal actuator commands.
+Holding both front buttons for 40 seconds enters **PURGE MODE**. All three pumps
+reverse for five minutes and then stop automatically. The gesture must be released
+before it can be triggered again. While active, purge ignores normal actuator
+commands; both controller and actuator enforce the five-minute deadline.
 
 ---
 
