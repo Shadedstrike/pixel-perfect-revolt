@@ -214,7 +214,7 @@ On a normal color press the solenoid opens immediately, its pump starts 50 ms
 later, and release stops the pump immediately while holding the air solenoid open
 for another 1 second. These timers are non-blocking.
 
-Holding both front buttons for 40 seconds enters **PURGE MODE**. All three pumps
+Holding both front buttons for 25 seconds enters **PURGE MODE**. All three pumps
 reverse for five minutes and then stop automatically. The gesture must be released
 before it can be triggered again. While active, purge ignores normal actuator
 commands; both controller and actuator enforce the five-minute deadline.

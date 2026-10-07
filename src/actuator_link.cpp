@@ -185,7 +185,7 @@ void actuatorLinkPurgeCheck(const bool down[10], uint32_t nowMs) {
   }
   if (!frontHoldStart)
     frontHoldStart = nowMs;
-  if (nowMs - frontHoldStart < 40000u)
+  if (nowMs - frontHoldStart < 25000u)
     return;
   ActuatorCmdPacket pkt = espnowActuatorMakePurgePacket();
   if (actuatorPublishPacket(&pkt, "purge")) {
