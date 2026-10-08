@@ -29,6 +29,7 @@
 #include "actuator_link.h"
 #include "actuator_config.h"
 #include "serial_status.h"
+#include "pi_link.h"
 #include "rhythm_game.h"
 #include "simon_game.h"
 #include "pattern_mode.h"
@@ -73,6 +74,7 @@ void setup(){
   delay(3000); // Long delay
   
   serialStatusBanner("CONTROLLER (synth + rhythm game)");
+  piLinkSetup();
   Serial.println("Serial initialized — use tags [HB] [ESPNOW] [ACT] to filter mentally.");
   delay(500);
   
@@ -431,6 +433,7 @@ void loop(){
   actuatorLinkLoop();
 
   uint32_t now=millis();
+  piLinkLoop(now);
   static uint32_t loopCounter = 0;
   static uint32_t modeDisplayStart=0; // When mode name display started (shared across sections)
   static uint32_t waveDisplayStart = 0; // Waveform preview after green hold (LCD ASCII art)
@@ -1621,6 +1624,8 @@ void loop(){
     simonGameAudioTargets(wantL, wantR);
   if (rhythmGameOwnsAudioOutput())
     rhythmGameAudioPump();
+  else if (piLinkSynthMuted())
+    audioRender(0.f, 0.f);
   else
     audioRender(wantL, wantR);
 

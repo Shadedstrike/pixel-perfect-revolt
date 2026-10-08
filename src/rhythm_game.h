@@ -33,6 +33,9 @@ bool rhythmGameOwnsAudioOutput();
 bool rhythmGameFrontBeatLedsActive();
 bool rhythmGameIsPaused();
 
+// Stop the controller's internal MP3/rhythm flow when the Pi owns song audio.
+void rhythmGameStopForExternalAudio();
+
 // Live 0–100 from last ~4s of beats only (red=poor … green=great); full song % at results.
 int rhythmGameLiveScorePct(uint32_t songRelMs);
 // GPIO 16 / 46: hue = rolling 4s score; brightness pulses sharply on each beat.

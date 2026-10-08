@@ -111,6 +111,22 @@ the task cannot start, the main loop provides a fallback poll.
 - The 35 ms debounce lockout in `readLevelDebounced()` is wall-clock based, so polling
   faster only detects transitions sooner — it cannot introduce bounce.
 
+### Raspberry Pi visualizer audio ownership
+
+The controller accepts two newline-terminated commands over its existing 115200-baud
+USB serial connection:
+
+```text
+PPR1 MODE PI_GAME
+PPR1 MODE NORMAL
+```
+
+`PI_GAME` stops any internal rhythm MP3 and ramps the local synth to silence, while
+button sampling, LEDs, and ESP-NOW actuator output continue normally. The Pi sends
+`PI_GAME` once per second as a heartbeat while it owns song playback. `NORMAL`
+restores the synth. If USB disappears or the Pi process fails, the controller restores
+the synth automatically after three seconds without a heartbeat.
+
 ---
 
 ## Settings reference

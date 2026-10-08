@@ -1390,6 +1390,18 @@ void rhythmGameAudioPumpN(int n) {
 // Entire retro rhythm flow (menu, countdown, play, results): MP3 only — never main-mode audioRender synth.
 bool rhythmGameOwnsAudioOutput() { return rhythmGameIsActive(); }
 
+void rhythmGameStopForExternalAudio() {
+  rhythmMp3Stop();
+  s_phase = RG_NORMAL;
+  s_tapCount = 0;
+  s_playPaused = false;
+  s_resumeCountdown = false;
+  s_playingAfkPrompt = false;
+  s_afkPromptStartMs = 0;
+  s_afkFadeStartMs = 0;
+  rhythmStreamSetFadeMul(1.f);
+}
+
 bool rhythmGameFrontBeatLedsActive() {
   return s_phase == RG_PLAYING && !s_playPaused && !s_resumeCountdown && !s_playingAfkPrompt;
 }
