@@ -7,6 +7,7 @@ static uint32_t s_lastPiGameCommandMs = 0;
 static constexpr uint32_t PI_LINK_FAILSAFE_MS = 3000;
 static char s_line[64];
 static size_t s_lineLen = 0;
+static bool s_discardLine = false;
 
 static void piLinkSetGameMode(bool enabled, uint32_t nowMs) {
   if (enabled) {
@@ -38,6 +39,7 @@ void piLinkSetup() {
   s_piGame = false;
   s_lastPiGameCommandMs = 0;
   s_lineLen = 0;
+  s_discardLine = false;
 }
 
 void piLinkLoop(uint32_t nowMs) {
@@ -52,16 +54,20 @@ void piLinkLoop(uint32_t nowMs) {
       continue;
     if (c == '\n') {
       s_line[s_lineLen] = 0;
-      if (s_lineLen > 0)
+      if (!s_discardLine && s_lineLen > 0)
         piLinkHandleLine(s_line, nowMs);
       s_lineLen = 0;
+      s_discardLine = false;
       continue;
     }
+    if (s_discardLine)
+      continue;
     if (s_lineLen + 1 < sizeof(s_line)) {
       s_line[s_lineLen++] = c;
     } else {
       // Discard an oversized/malformed line and wait for its newline.
       s_lineLen = 0;
+      s_discardLine = true;
     }
   }
 

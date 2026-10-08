@@ -487,7 +487,10 @@ void loop(){
   // Pump rhythm audio before game logic so stream-active checks see a fed decoder.
   if (rhythmGameOwnsAudioOutput())
     rhythmGameAudioPump();
-  rhythmGameLoop(now, down, edgeDownArr);
+  // The Pi owns music in PI_GAME mode. Do not allow the ten-key hold gesture to
+  // re-enter the controller's internal MP3 mode after piLink stopped it.
+  if (!piLinkSynthMuted())
+    rhythmGameLoop(now, down, edgeDownArr);
   simonGameLoop(now, down, edgeDownArr);
   patternModeLoop(now, down, edgeDownArr);
   for (int i = 0; i < 10; i++) {
