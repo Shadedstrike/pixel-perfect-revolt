@@ -8,5 +8,9 @@
 void piLinkSetup();
 void piLinkLoop(uint32_t nowMs);
 bool piLinkSynthMuted();
+// External-game UI ownership. These keep the local rhythm game's gestures and
+// screens untouched while the Raspberry Pi owns playback.
+void piLinkDrawLcd(uint32_t nowMs);
+void piLinkRenderLeds(uint32_t nowMs);
 
 #endif

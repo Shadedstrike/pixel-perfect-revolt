@@ -885,11 +885,16 @@ void loop(){
     lcdPollMs = 60;
   if (patternModeIsActive())
     lcdPollMs = 80;
+  if (piLinkSynthMuted())
+    lcdPollMs = 100;
   if (now - lastLCD > lcdPollMs) {
     if (actuatorLinkPurgeActive()) {
       lcd.clear();
       lcd.setCursor(3, 1); lcd.print(((now / 500u) & 1u) ? "PURGE MODE" : "          ");
       lcd.setCursor(1, 2); lcd.print("PUMPS REVERSING");
+      lastLCD = now;
+    } else if (piLinkSynthMuted()) {
+      piLinkDrawLcd(now);
       lastLCD = now;
     } else if (rhythmGameEnterCountdownActive()) {
       // Takes the whole panel while the 4-key enter gesture is held.
@@ -1033,6 +1038,8 @@ void loop(){
     const bool flash = ((now / 250u) & 1u) == 0u;
     for (int i = 0; i < 10; ++i)
       setLED_RGB(i, flash ? 255 : 0, flash ? 80 : 0, 0);
+  } else if (piLinkSynthMuted()) {
+    piLinkRenderLeds(now);
   } else if (rhythmGameIsActive()) {
     uint8_t beatFrL = 0, beatFgL = 0, beatFbL = 0, beatFrR = 0, beatFgR = 0, beatFbR = 0;
     uint8_t musicSideL[4][3], musicSideR[4][3];
