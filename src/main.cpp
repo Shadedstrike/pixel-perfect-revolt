@@ -474,10 +474,12 @@ void loop(){
     }
     if (eu) {
       releaseTs[i]=now;
+      piLinkButtonReleased((uint8_t)i, now);
       if (!piLinkSynthMuted())
         Serial.printf("[BTN] GPIO %d (idx %d) RELEASED\n", BTN_PINS[i], i);
     }
   }
+  piLinkUpdateButtons(now, down);
 
   // Worst gap between input samples. This is the number that decides whether a
   // fast tap can be missed — if it stays low in song mode, the fix is working.
@@ -754,7 +756,7 @@ void loop(){
   }
 
   // Idle mode (used by LCD + LED when not in rhythm UI)
-  bool idle = (!anyDown) && (now - lastPressMs > IDLE_AFTER_MS);
+  bool idle = !piLinkSynthMuted() && (!anyDown) && (now - lastPressMs > IDLE_AFTER_MS);
   actuatorLinkSyncDmxRgb(down, now, idle && !rhythmGameIsActive() && !patternModeIsActive());
 
   // Auto-advance idle LED/LCD mode every 2 minutes while unused (no rhythm UI).

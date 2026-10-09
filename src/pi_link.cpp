@@ -16,11 +16,19 @@ static uint8_t s_score = 100;
 static bool s_lcdDirty = true;
 static bool s_lcdNeedsFullDraw = true;
 static uint32_t s_lastLedRenderMs = 0;
+static char s_judgement[8] = "";
+static uint32_t s_judgementMs = 0;
+static uint32_t s_holdStartMs = 0;
+static bool s_meltdownActive = false;
+static uint32_t s_meltdownStartMs = 0;
 static constexpr uint32_t PI_LED_FRAME_MS = 25; // 40 Hz; bounds shared I2C traffic.
+static constexpr uint32_t PI_JUDGEMENT_MS = 700;
+static constexpr uint32_t PI_MELTDOWN_HOLD_MS = 5000;
 static constexpr uint32_t PI_BUTTON_MAX_AGE_MS = 500;
 static constexpr uint8_t PI_BUTTON_QUEUE_SIZE = 32;
 struct PendingButton {
   uint8_t index;
+  bool pressed;
   uint32_t queuedMs;
 };
 static PendingButton s_buttonQueue[PI_BUTTON_QUEUE_SIZE];
@@ -42,7 +50,8 @@ static void piLinkFlushButtons(uint32_t nowMs) {
     }
 
     char line[20];
-    const int length = snprintf(line, sizeof(line), "PPR1 BTN %u\n", (unsigned)button.index);
+    const int length = snprintf(line, sizeof(line), button.pressed ? "PPR1 BTN %u\n" : "PPR1 BTN_UP %u\n",
+                                (unsigned)button.index);
     if (length <= 0 || length >= (int)sizeof(line)) {
       s_buttonHead = (uint8_t)((s_buttonHead + 1u) % PI_BUTTON_QUEUE_SIZE);
       --s_buttonCount;
@@ -72,6 +81,9 @@ static void piLinkSetGameMode(bool enabled, uint32_t nowMs) {
       s_lcdDirty = true;
       s_lcdNeedsFullDraw = true;
       s_lastLedRenderMs = 0;
+      s_judgement[0] = 0;
+      s_holdStartMs = 0;
+      s_meltdownActive = false;
       Serial.println("[PI] MODE PI_GAME OK (local synth muted)");
     }
   } else if (s_piGame) {
@@ -79,6 +91,8 @@ static void piLinkSetGameMode(bool enabled, uint32_t nowMs) {
     piLinkClearButtons();
     s_lcdDirty = true;
     s_lcdNeedsFullDraw = true;
+    s_holdStartMs = 0;
+    s_meltdownActive = false;
     Serial.println("[PI] MODE NORMAL OK (local synth restored)");
   }
 }
@@ -95,6 +109,15 @@ static void piLinkHandleLine(const char *line, uint32_t nowMs) {
     long score = strtol(line + 11, nullptr, 10);
     if (s_piGame && score >= 0 && score <= 100) {
       s_score = (uint8_t)score;
+      s_lcdDirty = true;
+    }
+  } else if (strncmp(line, "PPR1 JUDGE ", 11) == 0) {
+    const char *label = line + 11;
+    if (s_piGame && (strcmp(label, "HIT") == 0 || strcmp(label, "MISS") == 0 ||
+                     strcmp(label, "PERFECT") == 0)) {
+      strncpy(s_judgement, label, sizeof(s_judgement) - 1u);
+      s_judgement[sizeof(s_judgement) - 1u] = 0;
+      s_judgementMs = nowMs;
       s_lcdDirty = true;
     }
   } else if (strncmp(line, "PPR1", 4) == 0) {
@@ -159,23 +182,74 @@ void piLinkButtonPressed(uint8_t index, uint32_t nowMs) {
     --s_buttonCount;
   }
   const uint8_t tail = (uint8_t)((s_buttonHead + s_buttonCount) % PI_BUTTON_QUEUE_SIZE);
-  s_buttonQueue[tail] = {index, nowMs};
+  s_buttonQueue[tail] = {index, true, nowMs};
   ++s_buttonCount;
 }
 
-void piLinkDrawLcd(uint32_t nowMs) {
-  (void)nowMs;
+void piLinkButtonReleased(uint8_t index, uint32_t nowMs) {
   if (!s_piGame)
     return;
+  if (s_buttonCount == PI_BUTTON_QUEUE_SIZE) {
+    s_buttonHead = (uint8_t)((s_buttonHead + 1u) % PI_BUTTON_QUEUE_SIZE);
+    --s_buttonCount;
+  }
+  const uint8_t tail = (uint8_t)((s_buttonHead + s_buttonCount) % PI_BUTTON_QUEUE_SIZE);
+  s_buttonQueue[tail] = {index, false, nowMs};
+  ++s_buttonCount;
+}
+
+void piLinkUpdateButtons(uint32_t nowMs, const bool down[10]) {
+  if (!s_piGame)
+    return;
+  bool anyDown = false;
+  for (int i = 0; i < 10; ++i)
+    anyDown = anyDown || down[i];
+  if (!anyDown) {
+    if (s_meltdownActive) {
+      s_meltdownActive = false;
+      s_lcdNeedsFullDraw = true;
+      s_lcdDirty = true;
+    }
+    s_holdStartMs = 0;
+    return;
+  }
+  if (s_holdStartMs == 0)
+    s_holdStartMs = nowMs;
+  else if (!s_meltdownActive && (uint32_t)(nowMs - s_holdStartMs) >= PI_MELTDOWN_HOLD_MS) {
+    s_meltdownActive = true;
+    s_meltdownStartMs = nowMs;
+    lcdRetroMeltdownBegin();
+  }
+}
+
+void piLinkDrawLcd(uint32_t nowMs) {
+  if (!s_piGame)
+    return;
+  if (s_meltdownActive) {
+    lcdRetroHoldMeltdown(nowMs, s_meltdownStartMs);
+    return;
+  }
+  if (s_judgement[0] != 0 && (uint32_t)(nowMs - s_judgementMs) >= PI_JUDGEMENT_MS) {
+    s_judgement[0] = 0;
+    s_lcdDirty = true;
+  }
   if (!s_lcdDirty)
     return;
   if (s_lcdNeedsFullDraw) {
     lcd.clear();
     lcd.setCursor(0, 0); lcd.print("====================");
     lcd.setCursor(1, 1); lcd.print("RHYTHM GAME MODE");
-    lcd.setCursor(7, 2); lcd.print("ACTIVE");
     s_lcdNeedsFullDraw = false;
   }
+  char judgementLine[21];
+  memset(judgementLine, ' ', 20);
+  judgementLine[20] = 0;
+  const char *judgement = s_judgement[0] ? s_judgement : "ACTIVE";
+  size_t judgementLen = strlen(judgement);
+  if (judgementLen > 20u)
+    judgementLen = 20u;
+  memcpy(judgementLine + (20u - judgementLen) / 2u, judgement, judgementLen);
+  lcd.setCursor(0, 2); lcd.print(judgementLine);
   char scoreLine[21];
   snprintf(scoreLine, sizeof(scoreLine), "SCORE %3u%%          ", (unsigned)s_score);
   lcd.setCursor(0, 3); lcd.print(scoreLine);

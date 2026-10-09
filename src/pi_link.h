@@ -11,6 +11,9 @@ bool piLinkSynthMuted();
 // Queue a high-priority button event for the Pi. Events are buffered briefly so
 // routine diagnostic output cannot make gameplay input disappear.
 void piLinkButtonPressed(uint8_t index, uint32_t nowMs);
+void piLinkButtonReleased(uint8_t index, uint32_t nowMs);
+// Tracks held play keys for the original five-second LCD meltdown easter egg.
+void piLinkUpdateButtons(uint32_t nowMs, const bool down[10]);
 // External-game UI ownership. These keep the local rhythm game's gestures and
 // screens untouched while the Raspberry Pi owns playback.
 void piLinkDrawLcd(uint32_t nowMs);
