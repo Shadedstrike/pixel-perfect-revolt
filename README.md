@@ -1,6 +1,6 @@
 # Pyrrisma (Pixel_perfect_revolt)
 
-ESP32-S3 rhythm controller + remote actuator node over **ESP-NOW**. The controller runs the synth, LCD, rhythm game, and button LEDs. The actuator node drives solenoids, motors, and DMX (PAR + bubble machine).
+ESP32-S3 synth/controller + remote actuator node over **ESP-NOW**. The controller runs the synth, LCD, button LEDs, and Raspberry Pi serial link. The Pi owns the game experience. The actuator node drives solenoids, motors, and DMX (PAR + bubble machine).
 
 ## Two boards — two firmware images
 
@@ -62,33 +62,12 @@ Controller overrides go under `[env:esp32-s3-devkitc-1]`. Actuator overrides und
 
 Constants in `.cpp` files (e.g. `src/leds.cpp`, `src/rhythm_game.cpp`) require editing source directly.
 
-### Entering rhythm mode — the hold countdown
+### Local rhythm mode is disabled
 
-Hold the **four bottom keys** (yellow 38 + 39, blue 42 + 2 — slots 0/1, which the code calls "top" but sit at the bottom of the panel) for **5 s**. While held, the
-LCD is taken over by `lcdRetroEnterCountdown()`:
-
-```
-[sprite border marching right ]
-  PRESS 5 MORE SEC
-R Y T H E M  M 0 D E     <- lightly glitched
-[sprite border marching left  ]
-```
-
-- Counts **5 → 1**, never displays 0 (it enters at 0).
-- Row 2 corrupts at most **two** columns per frame, and only columns holding a
-  letter, so the phrase stays readable. Glitch positions come from a hash of
-  (frame, column) rather than a fresh random each redraw — otherwise slow I2C
-  writes make it read as noise instead of glitch.
-- Borders use CGRAM slots **0–3**. Safe: meltdown also uses 0–3 but only during
-  play, and the play lane uses 4–5.
-- `lcdPollMs` drops to 60 ms while the countdown is up, or the sprite march looks
-  broken at the normal 500 ms.
-- Releasing any of the four keys resets the timer to zero — there is no partial
-  credit.
-
-Exit is still the **yellow pair only** (3 s → menu, 4 s → synth). That's a subset of
-the enter gesture, which is harmless because the exit check only runs once the phase
-is no longer `RG_NORMAL`.
+The legacy on-controller rhythm game remains in the source for reference, but
+`LOCAL_RHYTHM_GAME_ENABLED` is `0`. Its button gesture and LCD tutorial are disabled,
+and the controller build sets `RHYTHM_ENABLE_SD=0`, so it does not mount or scan the
+old rhythm SD card. Game selection and playback belong to the Raspberry Pi.
 
 ### Input timing — `inputFastPoll()` (`src/main.cpp`)
 
@@ -121,7 +100,7 @@ PPR1 MODE PI_GAME
 PPR1 MODE NORMAL
 ```
 
-`PI_GAME` stops any internal rhythm MP3 and ramps the local synth to silence, while
+`PI_GAME` defensively stops any internal rhythm state and ramps the local synth to silence, while
 button sampling, LEDs, and ESP-NOW actuator output continue normally. The Pi sends
 `PI_GAME` once per second as a heartbeat while it owns song playback. `NORMAL`
 restores the synth. If USB disappears or the Pi process fails, the controller restores
@@ -387,7 +366,7 @@ but its LED stays dark.
 
 ---
 
-### `src/rhythm_game.cpp` — rhythm game timing (edit source)
+### `src/rhythm_game.cpp` — legacy rhythm game timing (currently disabled)
 
 | Constant | Default | What it changes |
 |----------|---------|-----------------|
@@ -407,7 +386,7 @@ but its LED stays dark.
 
 Hold both yellow buttons for 5 seconds to enter the randomized side-button pattern
 game. Hold them again for 5 seconds to exit after releasing the entry gesture.
-Pattern, Simon, and rhythm modes are mutually exclusive.
+Pattern and Simon modes are mutually exclusive.
 
 ---
 

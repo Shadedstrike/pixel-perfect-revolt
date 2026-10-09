@@ -10,7 +10,7 @@
 //  - if any LEFT buttons down: 16 = up, 46 = down (left voice).
 //  - if any RIGHT buttons down: 46 = up, 16 = down (right voice).
 // Hold 16+46 together → cycle scale.
-// Idle LED/LCD mode advances automatically every 2 min when unused; hold both yellow (GPIO 38+39) ≥10s → rhythm game.
+// Idle LED/LCD mode advances automatically every 2 min when unused.
 // LCD shows scale, note names & offsets live.
 //
 // LED logic kept: solid while held, 1s tails, centers mirror mixes, idle modes (BREATHE, FLAME_WARM, FLAME_COOL, FLAME_RGB).
@@ -73,7 +73,7 @@ void setup(){
   Serial.setTxTimeoutMs(0);
   delay(3000); // Long delay
   
-  serialStatusBanner("CONTROLLER (synth + rhythm game)");
+  serialStatusBanner("CONTROLLER (synth + Pi serial control)");
   piLinkSetup();
   Serial.println("Serial initialized — use tags [HB] [ESPNOW] [ACT] to filter mentally.");
   delay(500);
@@ -352,13 +352,13 @@ uint32_t inputFastPollWorstGapMs(bool reset) {
 // Slots into the idle rotation between the normal LED modes, so it appears
 // regularly without replacing the ambient look.
 static const uint32_t IDLE_CHOREO_STEP_MS = 5000; // per gesture
-static const uint32_t IDLE_CHOREO_TOTAL_MS = IDLE_CHOREO_STEP_MS * 4; // all four
+static const uint32_t IDLE_CHOREO_TOTAL_MS = IDLE_CHOREO_STEP_MS * 3;
 static bool     s_idleChoreoActive = false;
 static uint32_t s_idleChoreoStartMs = 0;
 
 static uint8_t idleChoreoWhich(uint32_t now, uint32_t sinceIdleMs) {
   (void)now;
-  return (uint8_t)((sinceIdleMs / IDLE_CHOREO_STEP_MS) & 0x03u);
+  return (uint8_t)((sinceIdleMs / IDLE_CHOREO_STEP_MS) % 3u);
 }
 
 // Renders one gesture: its keys breathe together, everything else dark.
@@ -373,11 +373,7 @@ static void renderIdleChoreo(uint32_t now, uint32_t sinceIdleMs) {
     case 0: // Simon — both blue
       member[IDX_LEFT[1]] = member[IDX_RIGHT[1]] = true;
       break;
-    case 1: // Rhythm — all four top keys
-      member[IDX_LEFT[0]] = member[IDX_RIGHT[0]] = true;
-      member[IDX_LEFT[1]] = member[IDX_RIGHT[1]] = true;
-      break;
-    case 2: // Wave — both green
+    case 1: // Wave — both green
       member[IDX_LEFT[2]] = member[IDX_RIGHT[2]] = true;
       break;
     default: // Scale — both red

@@ -3,6 +3,11 @@
 
 #include <Arduino.h>
 
+// The Raspberry Pi now owns the game experience over USB serial. Keep the old
+// on-controller rhythm implementation compiled for the moment, but make it
+// unreachable and avoid mounting/scanning its SD card at startup.
+#define LOCAL_RHYTHM_GAME_ENABLED 0
+
 // ===================== I2C & LCD =====================
 #define I2C_SDA 17
 #define I2C_SCL 18
@@ -68,4 +73,3 @@ const float VIB_RATE_HZ   = 3.2f;
 const float FREQ_GLIDE_TAU_S = 0.040f;
 
 #endif // CONFIG_H
-

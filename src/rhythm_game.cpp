@@ -1081,9 +1081,15 @@ static void finishSong(uint32_t now) {
 }
 
 void rhythmGameSetup() {
+#if LOCAL_RHYTHM_GAME_ENABLED
   if (!rhythmMp3FsInit())
     Serial.println("[RHYTHM] SD not mounted — insert FAT32 card with /rhythm/*.mp3");
   rhythmReloadSongList();
+#else
+  // The Pi owns game selection and playback. In particular, do not touch the
+  // SD/SPI bus here: several button GPIOs have historically shared those pins.
+  Serial.println("[RHYTHM] Local rhythm game disabled; Pi serial control active");
+#endif
 }
 
 static void rhythmMaybeRegisterGoodHit(uint32_t rel, uint32_t now);
@@ -1105,6 +1111,17 @@ static bool rhythmScoreNearestDisplayBeat(uint32_t rel, uint32_t now, bool requi
 static void rhythmUpdateHoldMeltdown(uint32_t now, const bool *down);
 
 void rhythmGameLoop(uint32_t now, const bool *down, const bool *edgeDown) {
+#if !LOCAL_RHYTHM_GAME_ENABLED
+  (void)now;
+  (void)down;
+  (void)edgeDown;
+  // Defensive reset makes this safe even if a future caller invokes setup/loop
+  // after state was changed while developing the legacy mode.
+  s_phase = RG_NORMAL;
+  s_eightHoldStart = 0;
+  s_enterHeldMs = 0;
+  return;
+#endif
 
   if (patternModeIsActive())
     return;
