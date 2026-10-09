@@ -110,7 +110,7 @@ void piLinkDrawLcd(uint32_t nowMs) {
   if (s_lcdNeedsFullDraw) {
     lcd.clear();
     lcd.setCursor(0, 0); lcd.print("====================");
-    lcd.setCursor(1, 1); lcd.print("RYTHEM GAME MODE");
+    lcd.setCursor(1, 1); lcd.print("RHYTHM GAME MODE");
     lcd.setCursor(7, 2); lcd.print("ACTIVE");
     s_lcdNeedsFullDraw = false;
   }
