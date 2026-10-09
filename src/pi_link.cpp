@@ -15,6 +15,8 @@ static uint32_t s_lastBeatMs = 0;
 static uint8_t s_score = 100;
 static bool s_lcdDirty = true;
 static bool s_lcdNeedsFullDraw = true;
+static uint32_t s_lastLedRenderMs = 0;
+static constexpr uint32_t PI_LED_FRAME_MS = 25; // 40 Hz; bounds shared I2C traffic.
 
 static void piLinkSetGameMode(bool enabled, uint32_t nowMs) {
   if (enabled) {
@@ -28,6 +30,7 @@ static void piLinkSetGameMode(bool enabled, uint32_t nowMs) {
       s_lastBeatMs = 0;
       s_lcdDirty = true;
       s_lcdNeedsFullDraw = true;
+      s_lastLedRenderMs = 0;
       Serial.println("[PI] MODE PI_GAME OK (local synth muted)");
     }
   } else if (s_piGame) {
@@ -123,6 +126,9 @@ void piLinkDrawLcd(uint32_t nowMs) {
 void piLinkRenderLeds(uint32_t nowMs) {
   if (!s_piGame)
     return;
+  if (s_lastLedRenderMs != 0 && (uint32_t)(nowMs - s_lastLedRenderMs) < PI_LED_FRAME_MS)
+    return;
+  s_lastLedRenderMs = nowMs;
   const uint32_t age = nowMs - s_lastBeatMs;
   // A crisp white beat attack fading over 180 ms on all side keys.
   uint8_t flash = age < 180u ? (uint8_t)(255u - (age * 255u / 180u)) : 0u;

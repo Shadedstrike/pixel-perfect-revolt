@@ -247,6 +247,10 @@ void setup(){
   // delay a button press reaching the relay.
   // Audio outranks the display: keep the MP3 ring fed between LCD row writes.
   lcdSetInterRowCallback(rhythmGameAudioPump);
+  // Recover automatically if a peripheral/library call ever wedges loopTask.
+  // Enable only after the intentionally long boot animations have completed.
+  enableLoopWDT();
+  Serial.println("[SAFE] loop watchdog enabled (5s stall recovery)");
   // NOTE: the input sampler task is deliberately NOT started here. See loop().
 }
 

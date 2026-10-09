@@ -1,4 +1,5 @@
 #include "serial_status.h"
+#include <esp_system.h>
 
 #ifndef PYRRISMA_PIO_ENV
 #define PYRRISMA_PIO_ENV "unknown"
@@ -32,6 +33,7 @@ void serialStatusBanner(const char *roleTitle) {
   Serial.printf("  PlatformIO env: %s\n", PYRRISMA_PIO_ENV);
   Serial.printf("  Serial: 115200 baud (pio device monitor -e %s)\n", PYRRISMA_PIO_ENV);
   Serial.printf("  Uptime: boot @ millis=%lu\n", (unsigned long)millis());
+  Serial.printf("  Reset reason: %d (ESP-IDF esp_reset_reason)\n", (int)esp_reset_reason());
   Serial.println("  Log tags: [HB] heartbeat  [ESPNOW] radio  [SOL] solenoids  [DMX] lighting");
   Serial.println("============================================================");
   Serial.println();
