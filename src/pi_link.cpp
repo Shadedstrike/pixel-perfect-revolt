@@ -17,6 +17,47 @@ static bool s_lcdDirty = true;
 static bool s_lcdNeedsFullDraw = true;
 static uint32_t s_lastLedRenderMs = 0;
 static constexpr uint32_t PI_LED_FRAME_MS = 25; // 40 Hz; bounds shared I2C traffic.
+static constexpr uint32_t PI_BUTTON_MAX_AGE_MS = 500;
+static constexpr uint8_t PI_BUTTON_QUEUE_SIZE = 32;
+struct PendingButton {
+  uint8_t index;
+  uint32_t queuedMs;
+};
+static PendingButton s_buttonQueue[PI_BUTTON_QUEUE_SIZE];
+static uint8_t s_buttonHead = 0;
+static uint8_t s_buttonCount = 0;
+
+static void piLinkClearButtons() {
+  s_buttonHead = 0;
+  s_buttonCount = 0;
+}
+
+static void piLinkFlushButtons(uint32_t nowMs) {
+  while (s_buttonCount > 0) {
+    const PendingButton &button = s_buttonQueue[s_buttonHead];
+    if ((uint32_t)(nowMs - button.queuedMs) > PI_BUTTON_MAX_AGE_MS) {
+      s_buttonHead = (uint8_t)((s_buttonHead + 1u) % PI_BUTTON_QUEUE_SIZE);
+      --s_buttonCount;
+      continue;
+    }
+
+    char line[20];
+    const int length = snprintf(line, sizeof(line), "PPR1 BTN %u\n", (unsigned)button.index);
+    if (length <= 0 || length >= (int)sizeof(line)) {
+      s_buttonHead = (uint8_t)((s_buttonHead + 1u) % PI_BUTTON_QUEUE_SIZE);
+      --s_buttonCount;
+      continue;
+    }
+    // Serial is configured non-blocking. Wait until the entire protocol record
+    // fits so a debug backlog cannot truncate or corrupt a button line.
+    if (Serial.availableForWrite() < length)
+      return;
+    if (Serial.write((const uint8_t *)line, (size_t)length) != (size_t)length)
+      return;
+    s_buttonHead = (uint8_t)((s_buttonHead + 1u) % PI_BUTTON_QUEUE_SIZE);
+    --s_buttonCount;
+  }
+}
 
 static void piLinkSetGameMode(bool enabled, uint32_t nowMs) {
   if (enabled) {
@@ -35,6 +76,7 @@ static void piLinkSetGameMode(bool enabled, uint32_t nowMs) {
     }
   } else if (s_piGame) {
     s_piGame = false;
+    piLinkClearButtons();
     s_lcdDirty = true;
     s_lcdNeedsFullDraw = true;
     Serial.println("[PI] MODE NORMAL OK (local synth restored)");
@@ -65,9 +107,12 @@ void piLinkSetup() {
   s_lastPiGameCommandMs = 0;
   s_lineLen = 0;
   s_discardLine = false;
+  piLinkClearButtons();
 }
 
 void piLinkLoop(uint32_t nowMs) {
+  // Gameplay input owns the first opportunity to use USB TX capacity each loop.
+  piLinkFlushButtons(nowMs);
   // Bound work per frame so a noisy host cannot starve audio/button handling.
   int budget = 96;
   while (budget-- > 0 && Serial.available() > 0) {
@@ -98,11 +143,25 @@ void piLinkLoop(uint32_t nowMs) {
 
   if (s_piGame && (uint32_t)(nowMs - s_lastPiGameCommandMs) > PI_LINK_FAILSAFE_MS) {
     s_piGame = false;
+    piLinkClearButtons();
     Serial.println("[PI] heartbeat timeout: local synth restored");
   }
 }
 
 bool piLinkSynthMuted() { return s_piGame; }
+
+void piLinkButtonPressed(uint8_t index, uint32_t nowMs) {
+  if (!s_piGame)
+    return;
+  if (s_buttonCount == PI_BUTTON_QUEUE_SIZE) {
+    // Preserve the freshest input during an exceptional host-side stall.
+    s_buttonHead = (uint8_t)((s_buttonHead + 1u) % PI_BUTTON_QUEUE_SIZE);
+    --s_buttonCount;
+  }
+  const uint8_t tail = (uint8_t)((s_buttonHead + s_buttonCount) % PI_BUTTON_QUEUE_SIZE);
+  s_buttonQueue[tail] = {index, nowMs};
+  ++s_buttonCount;
+}
 
 void piLinkDrawLcd(uint32_t nowMs) {
   (void)nowMs;

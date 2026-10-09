@@ -8,6 +8,9 @@
 void piLinkSetup();
 void piLinkLoop(uint32_t nowMs);
 bool piLinkSynthMuted();
+// Queue a high-priority button event for the Pi. Events are buffered briefly so
+// routine diagnostic output cannot make gameplay input disappear.
+void piLinkButtonPressed(uint8_t index, uint32_t nowMs);
 // External-game UI ownership. These keep the local rhythm game's gestures and
 // screens untouched while the Raspberry Pi owns playback.
 void piLinkDrawLcd(uint32_t nowMs);

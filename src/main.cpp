@@ -19,6 +19,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <esp_random.h>
+#include <esp_task_wdt.h>
 #include "config.h"
 #include "scales.h"
 #include "leds.h"
@@ -298,9 +299,14 @@ void inputFastPoll(uint32_t now) {
 // task period (2 ms), not by frame length.
 static void inputSamplerTask(void *arg) {
   (void)arg;
+  // loopTask is already watched. Register this independent input task too: if
+  // GPIO, radio, or a library call ever wedges it, the board reboots into a known
+  // state instead of remaining alive with permanently dead buttons.
+  esp_task_wdt_add(nullptr);
   const TickType_t period = pdMS_TO_TICKS(INPUT_TASK_PERIOD_MS);
   for (;;) {
     inputFastPoll(millis());
+    esp_task_wdt_reset();
     // vTaskDelay, NOT vTaskDelayUntil. If one iteration overruns (a blocked Serial
     // write, a slow esp_now_send), DelayUntil returns immediately over and over to
     // "catch up" on missed deadlines, spinning at priority 5 and starving loop().
@@ -460,11 +466,16 @@ void loop(){
     if (down[i]) anyDown=true;
     if (ed) {
       lastPressMs=now;
-      Serial.printf("[BTN] GPIO %d (idx %d) PRESSED\n", BTN_PINS[i], i);
+      piLinkButtonPressed((uint8_t)i, now);
+      // Outside Pi mode this remains useful diagnostic output. During Pi mode,
+      // the buffered PPR1 record above is the sole, higher-priority event path.
+      if (!piLinkSynthMuted())
+        Serial.printf("[BTN] GPIO %d (idx %d) PRESSED\n", BTN_PINS[i], i);
     }
     if (eu) {
       releaseTs[i]=now;
-      Serial.printf("[BTN] GPIO %d (idx %d) RELEASED\n", BTN_PINS[i], i);
+      if (!piLinkSynthMuted())
+        Serial.printf("[BTN] GPIO %d (idx %d) RELEASED\n", BTN_PINS[i], i);
     }
   }
 
